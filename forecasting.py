@@ -1,4 +1,5 @@
 # forecasting.py
+# Revised: three independent methods (MA, WMA, XGBoost) with adaptive backtesting.
 
 import re
 from typing import Dict, List
@@ -1332,25 +1333,39 @@ def backtest_method_details(
     # -----------------------------------------------------
     # Walk-forward backtest
     # -----------------------------------------------------
+    #
+    # Gunakan adaptive window saat histori pendek. Dengan cara ini
+    # histori tepat 3 bulan tetap memiliki pasangan actual-vs-forecast
+    # untuk WAPE, tanpa memaksa histori tambahan yang tidak tersedia.
+    # Saat histori sudah >= window, window kembali ke 3 bulan penuh.
+    # -----------------------------------------------------
 
-    for i in range(
-        window,
-        len(values),
-    ):
+    if len(values) < 2:
+        return {
+            "actual": [],
+            "forecast": [],
+            "wape": np.nan,
+        }
+
+    for i in range(1, len(values)):
 
         train_values = values[:i]
         actual_value = values[i]
+        effective_window = min(window, len(train_values))
+
+        if effective_window <= 0:
+            continue
 
         try:
             if prefix == "WMA":
                 prediction = weighted_moving_average(
                     train_values,
-                    window,
+                    effective_window,
                 )
             else:
                 prediction = moving_average(
                     train_values,
-                    window,
+                    effective_window,
                 )
 
             if not np.isfinite(prediction):
@@ -2271,6 +2286,15 @@ def forecast_stream(
         satuan = item_result["satuan"]
         methods = item_result["methods"]
 
+        # Item tanpa OUT sama sekali pada histori tidak ditampilkan.
+        # Nilai negatif sudah dinormalisasi menjadi 0 di prepare_item_history().
+        if history.empty or not np.isfinite(
+            pd.to_numeric(history["value"], errors="coerce").fillna(0.0).sum()
+        ) or float(
+            pd.to_numeric(history["value"], errors="coerce").fillna(0.0).sum()
+        ) <= 0:
+            continue
+
         row = {
             "Nama Barang": item_name,
             "Satuan": satuan,
@@ -2778,385 +2802,10 @@ if __name__ == "__main__":
         print()
 
 # ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
+# CATATAN ARSITEKTUR
 # ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
+# MA, WMA, dan XGBoost dihitung independen. Tidak ada Best Method.
+# WAPE berasal dari walk-forward backtesting actual historis.
+# Forecast recursive intermediate tidak dimasukkan ke WAPE.
+# Actual intermediate meng-override forecast recursive.
 # ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap
-# dengan UI lama tidak langsung gagal saat module dimuat.
-# ---------------------------------------------------------
-# CATATAN ARSITEKTUR: THREE-METHOD FORECASTING
-# ---------------------------------------------------------
-# Forecast utama tidak lagi memilih satu metode terbaik.
-# MA, WMA, dan XGBoost dihitung secara independen.
-# Setiap metode memiliki forecast dan WAPE masing-masing.
-# WAPE berasal dari walk-forward backtest pada actual.
-# Forecast recursive intermediate tidak masuk perhitungan WAPE.
-# Actual intermediate selalu meng-override forecast recursive.
-# Target multi-bulan dihitung bertahap untuk setiap metode.
-# MA dan WMA memakai window default 3 bulan.
-# Alias MA3 dan WMA3 tetap didukung untuk kompatibilitas.
-# XGBoost hanya aktif jika package tersedia dan histori cukup.
-# Tidak ada ranking Best Method di engine forecast baru.
-# Summary tetap menyediakan field legacy agar integrasi bertahap

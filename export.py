@@ -12,7 +12,6 @@ from openpyxl.utils import get_column_letter
 FORECAST_COLUMNS = [
     "Nama Barang",
     "Satuan",
-    "Histori",
     "Forecast MA",
     "WAPE MA",
     "Forecast WMA",
@@ -25,13 +24,15 @@ FORECAST_COLUMNS = [
 EXPORT_COLUMNS = [
     "Nama Barang",
     "Satuan",
-    "Jumlah Histori",
     "Forecast MA",
     "WAPE MA (%)",
+    "Accuracy MA (%)",
     "Forecast WMA",
     "WAPE WMA (%)",
+    "Accuracy WMA (%)",
     "Forecast XGBoost",
     "WAPE XGBoost (%)",
+    "Accuracy XGBoost (%)",
 ]
 
 
@@ -179,6 +180,11 @@ def _format_forecast_dataframe(
 
     result = df.copy()
 
+    # Kolom Histori hanya dibutuhkan internal untuk perhitungan.
+    # Jangan tampilkan di file Excel hasil forecast.
+    if "Histori" in result.columns:
+        result = result.drop(columns=["Histori"])
+
     # -----------------------------------------------------
     # Kolom utama
     # -----------------------------------------------------
@@ -186,13 +192,15 @@ def _format_forecast_dataframe(
     preferred_columns = [
         "Nama Barang",
         "Satuan",
-        "Histori",
         "Forecast MA",
         "WAPE MA",
+        "Accuracy MA",
         "Forecast WMA",
         "WAPE WMA",
+        "Accuracy WMA",
         "Forecast XGBoost",
         "WAPE XGBoost",
+        "Accuracy XGBoost",
     ]
 
     result = _ordered_columns(
@@ -205,17 +213,23 @@ def _format_forecast_dataframe(
     # -----------------------------------------------------
 
     rename_map = {
-        "Histori":
-            "Jumlah Histori",
-
         "WAPE MA":
             "WAPE MA (%)",
+
+        "Accuracy MA":
+            "Accuracy MA (%)",
 
         "WAPE WMA":
             "WAPE WMA (%)",
 
+        "Accuracy WMA":
+            "Accuracy WMA (%)",
+
         "WAPE XGBoost":
             "WAPE XGBoost (%)",
+
+        "Accuracy XGBoost":
+            "Accuracy XGBoost (%)",
     }
 
     result = result.rename(
@@ -257,28 +271,29 @@ def _format_forecast_dataframe(
             )
 
     # -----------------------------------------------------
-    # Numeric Histori
+    # Accuracy - all methods
     # -----------------------------------------------------
 
-    if (
-        "Jumlah Histori"
-        in result.columns
-    ):
+    accuracy_pairs = [
+        ("Accuracy MA (%)", "WAPE MA (%)"),
+        ("Accuracy WMA (%)", "WAPE WMA (%)"),
+        ("Accuracy XGBoost (%)", "WAPE XGBoost (%)"),
+    ]
 
-        history_numeric = pd.to_numeric(
-            result[
-                "Jumlah Histori"
-            ],
-            errors="coerce",
-        )
-
-        result[
-            "Jumlah Histori"
-        ] = history_numeric.fillna(
-            0
-        ).astype(
-            int
-        )
+    for accuracy_column, wape_column in accuracy_pairs:
+        if accuracy_column in result.columns:
+            result[accuracy_column] = _numeric_series(
+                result[accuracy_column],
+                decimals=2,
+            )
+        elif wape_column in result.columns:
+            result[accuracy_column] = (
+                100.0
+                - pd.to_numeric(
+                    result[wape_column],
+                    errors="coerce",
+                )
+            ).round(2)
 
     # -----------------------------------------------------
     # Normalize optional recursive flag
@@ -573,6 +588,27 @@ def _format_worksheet(
                 row[0].number_format = "0.00"
 
     # -----------------------------------------------------
+    # Accuracy - all methods
+    # -----------------------------------------------------
+
+    accuracy_headers = [
+        "Accuracy MA (%)",
+        "Accuracy WMA (%)",
+        "Accuracy XGBoost (%)",
+    ]
+
+    for header in accuracy_headers:
+        if header in headers:
+            column_number = headers[header]
+
+            for row in worksheet.iter_rows(
+                min_row=2,
+                min_col=column_number,
+                max_col=column_number,
+            ):
+                row[0].number_format = "0.00"
+
+    # -----------------------------------------------------
     # Forecast - all methods
     # -----------------------------------------------------
 
@@ -592,31 +628,6 @@ def _format_worksheet(
                 max_col=column_number,
             ):
                 row[0].number_format = "#,##0.00"
-
-    # -----------------------------------------------------
-    # Jumlah Histori
-    # -----------------------------------------------------
-
-    if (
-        "Jumlah Histori"
-        in headers
-    ):
-
-        column_number = (
-            headers[
-                "Jumlah Histori"
-            ]
-        )
-
-        for row in worksheet.iter_rows(
-            min_row=2,
-            min_col=column_number,
-            max_col=column_number,
-        ):
-
-            row[0].number_format = (
-                "0"
-            )
 
     # -----------------------------------------------------
     # Detail recursive value
@@ -650,6 +661,62 @@ def _format_worksheet(
     worksheet.row_dimensions[
         1
     ].height = 24
+
+
+# =========================================================
+# AVERAGE ROW DETAIL SHEET
+# =========================================================
+
+def _append_average_row(dataframe):
+    """
+    Menambahkan satu baris RATA-RATA di bagian paling bawah
+    untuk WAPE dan Forecast Accuracy masing-masing metode.
+
+    Rata-rata dihitung hanya dari baris item yang tersedia pada
+    sheet tersebut. BBB dan BBT tidak pernah digabung.
+    """
+
+    df = _safe_dataframe(dataframe)
+
+    if df.empty:
+        return df
+
+    result = df.copy()
+
+    average_row = {column: None for column in result.columns}
+
+    if "Nama Barang" in result.columns:
+        average_row["Nama Barang"] = "RATA-RATA"
+
+    if "Satuan" in result.columns:
+        average_row["Satuan"] = ""
+
+    # Forecast tidak dirata-ratakan; yang diringkas adalah performa metode.
+    performance_columns = [
+        "WAPE MA (%)",
+        "Accuracy MA (%)",
+        "WAPE WMA (%)",
+        "Accuracy WMA (%)",
+        "WAPE XGBoost (%)",
+        "Accuracy XGBoost (%)",
+    ]
+
+    for column in performance_columns:
+        if column in result.columns:
+            values = pd.to_numeric(
+                result[column],
+                errors="coerce",
+            )
+            if values.notna().any():
+                average_row[column] = round(
+                    float(values.mean()),
+                    2,
+                )
+
+    return pd.concat(
+        [result, pd.DataFrame([average_row])],
+        ignore_index=True,
+    )
 
 
 # =========================================================
@@ -701,6 +768,7 @@ def export_forecast_excel(
     nama_user="",
     recursive_detail_bbb=None,
     recursive_detail_bbt=None,
+    summary=None,
 ):
     """
     Membuat file Excel hasil forecasting.
@@ -838,13 +906,15 @@ def export_forecast_excel(
                     "Outlet",
                     "Nama Barang",
                     "Satuan",
-                    "Jumlah Histori",
                     "Forecast MA",
                     "WAPE MA (%)",
+                    "Accuracy MA (%)",
                     "Forecast WMA",
                     "WAPE WMA (%)",
+                    "Accuracy WMA (%)",
                     "Forecast XGBoost",
                     "WAPE XGBoost (%)",
+                    "Accuracy XGBoost (%)",
                 ]
             )
 
@@ -859,9 +929,11 @@ def export_forecast_excel(
         # DETAIL BBB
         # =================================================
 
+        df_detail_bbb = _append_average_row(df_bbb)
+
         _write_dataframe_sheet(
             writer,
-            df_bbb,
+            df_detail_bbb,
             "Detail BBB",
             _empty_export_dataframe(),
         )
@@ -871,15 +943,17 @@ def export_forecast_excel(
         # DETAIL BBT
         # =================================================
 
+        df_detail_bbt = _append_average_row(df_bbt)
+
         _write_dataframe_sheet(
             writer,
-            df_bbt,
+            df_detail_bbt,
             "Detail BBT",
             _empty_export_dataframe(),
         )
 
         # =================================================
-        # SHEET 4
+        # SHEET 5
         # RECURSIVE BBB
         # =================================================
 
@@ -1045,10 +1119,13 @@ if __name__ == "__main__":
                 "Histori": 8,
                 "Forecast MA": 125.50,
                 "WAPE MA": 12.35,
+                "Accuracy MA": 87.65,
                 "Forecast WMA": 128.25,
                 "WAPE WMA": 10.75,
+                "Accuracy WMA": 89.25,
                 "Forecast XGBoost": 126.80,
                 "WAPE XGBoost": 9.85,
+                "Accuracy XGBoost": 90.15,
             },
         ]
     )
@@ -1061,10 +1138,13 @@ if __name__ == "__main__":
                 "Histori": 8,
                 "Forecast MA": 97.50,
                 "WAPE MA": 10.25,
+                "Accuracy MA": 89.75,
                 "Forecast WMA": 98.25,
                 "WAPE WMA": 8.75,
+                "Accuracy WMA": 91.25,
                 "Forecast XGBoost": 99.10,
                 "WAPE XGBoost": 8.10,
+                "Accuracy XGBoost": 91.90,
             },
         ]
     )

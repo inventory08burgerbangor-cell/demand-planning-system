@@ -857,7 +857,6 @@ def display_forecast_table(
         "WAPE WMA",
         "Forecast XGBoost",
         "WAPE XGBoost",
-        "Histori",
     ]
 
     columns = [
@@ -957,7 +956,6 @@ def normalize_loaded_dataframe(data):
         "WAPE WMA",
         "Forecast XGBoost",
         "WAPE XGBoost",
-        "Histori",
     ]
 
     existing_preferred = [
@@ -981,6 +979,12 @@ def normalize_loaded_dataframe(data):
     df = df[
         existing_preferred + remaining_columns
     ]
+
+    # Kolom jumlah histori tidak ditampilkan/disimpan di dataframe hasil
+    # yang dipakai Dashboard. Informasi periode histori tetap tersedia
+    # melalui setting dan metadata history, bukan sebagai kolom tabel.
+    if "Histori" in df.columns:
+        df = df.drop(columns=["Histori"])
 
     return df
 
@@ -2651,6 +2655,63 @@ if menu == "📊 Dashboard":
         {},
     )
 
+    # Jika summary dari engine/history belum lengkap, isi ulang dari
+    # kolom WAPE pada hasil forecast agar Dashboard tidak kosong hanya
+    # karena struktur summary berbeda antar versi modul.
+    def ensure_summary_from_dataframe(summary_obj, df_obj):
+        if not isinstance(summary_obj, dict):
+            summary_obj = {}
+
+        if df_obj is None or df_obj.empty:
+            return summary_obj
+
+        result = dict(summary_obj)
+
+        method_pairs = [
+            ("MA", "wape_ma", "accuracy_ma", "WAPE MA"),
+            ("WMA", "wape_wma", "accuracy_wma", "WAPE WMA"),
+            ("XGBoost", "wape_xgboost", "accuracy_xgboost", "WAPE XGBoost"),
+        ]
+
+        for _, wape_key, accuracy_key, column in method_pairs:
+            value = result.get(wape_key)
+
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                if column in df_obj.columns:
+                    series = pd.to_numeric(df_obj[column], errors="coerce").dropna()
+                    if not series.empty:
+                        value = float(series.mean())
+                        result[wape_key] = value
+
+            if result.get(accuracy_key) is None or (
+                isinstance(result.get(accuracy_key), float)
+                and pd.isna(result.get(accuracy_key))
+            ):
+                if value is not None:
+                    try:
+                        result[accuracy_key] = max(0.0, 100.0 - float(value))
+                    except Exception:
+                        pass
+
+        # Legacy alias mengikuti MA, tetapi tidak digunakan untuk memilih metode.
+        result["wape"] = result.get("wape_ma")
+        result["accuracy"] = result.get("accuracy_ma")
+        result["best_method"] = None
+        return result
+
+    summary_bbb = ensure_summary_from_dataframe(
+        summary_bbb,
+        st.session_state.forecast_bbb,
+    )
+    summary_bbt = ensure_summary_from_dataframe(
+        summary_bbt,
+        st.session_state.forecast_bbt,
+    )
+
+    summary["bbb"] = summary_bbb
+    summary["bbt"] = summary_bbt
+    st.session_state.forecast_summary = summary
+
     # Dashboard hanya menampilkan performance jika memang ada
     # hasil forecast yang sudah dimuat. Ini mencegah Dashboard
     # terlihat seolah-olah memiliki nilai performance padahal
@@ -2685,6 +2746,13 @@ if menu == "📊 Dashboard":
             methods,
         ):
             with col:
+                wape_display = format_percent(
+                    stream_summary.get(wape_key)
+                )
+                accuracy_display = format_percent(
+                    stream_summary.get(accuracy_key)
+                )
+
                 st.markdown(
                     f"""
                     <div class="metric-card">
@@ -2692,9 +2760,7 @@ if menu == "📊 Dashboard":
                             WAPE {method_name}
                         </div>
                         <div class="metric-value">
-                            {format_percent(
-                                stream_summary.get(wape_key)
-                            )}
+                            {wape_display}
                         </div>
                     </div>
                     """,
@@ -2703,9 +2769,7 @@ if menu == "📊 Dashboard":
 
                 st.caption(
                     f"Forecast Accuracy {method_name}: "
-                    f"{format_percent(
-                        stream_summary.get(accuracy_key)
-                    )}"
+                    f"{accuracy_display}"
                 )
 
     if has_loaded_forecast:
@@ -2912,6 +2976,9 @@ if menu == "📊 Dashboard":
                             "nama_user",
                             "Demand Planner",
                         )
+                    ),
+                    summary=(
+                        st.session_state.forecast_summary
                     ),
                 )
 
@@ -3980,18 +4047,15 @@ elif menu == "🔮 Forecast":
                             preview_column = "OUT BBT"
 
                         if preview_item and preview_column:
-                            recursive_detail = explain_recursive_forecast(
-                                df=df,
-                                item_name=preview_item,
-                                value_column=preview_column,
-                                forecast_period=period_text,
-                                history_months=get_forecast_history_parameter(setting),
-                            )
+                            # forecasting.py versi baru menyediakan penjelasan
+                            # recursive sebagai teks informatif, bukan dataframe detail.
+                            recursive_detail = explain_recursive_forecast()
 
-                            detail_df = recursive_detail.get(
-                                "details",
-                                pd.DataFrame(),
-                            )
+                            if recursive_detail:
+                                st.markdown("#### 🔁 Cara Kerja Recursive Forecast")
+                                st.info(recursive_detail)
+
+                            detail_df = pd.DataFrame()
 
                             if not detail_df.empty:
                                 st.markdown("#### 🔁 Contoh Langkah Recursive")
@@ -4099,6 +4163,11 @@ elif menu == "🔮 Forecast":
                             .apply(format_percent)
                         )
 
+                display_df = display_df.drop(
+                    columns=["Histori"],
+                    errors="ignore",
+                )
+
                 st.dataframe(
                     display_df,
                     use_container_width=True,
@@ -4140,6 +4209,11 @@ elif menu == "🔮 Forecast":
                             )
                             .apply(format_percent)
                         )
+
+                display_df = display_df.drop(
+                    columns=["Histori"],
+                    errors="ignore",
+                )
 
                 st.dataframe(
                     display_df,

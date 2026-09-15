@@ -1,13 +1,14 @@
 import sqlite3
 import json
 from datetime import datetime
+from pathlib import Path
 
 
 # =========================================================
 # CONFIG
 # =========================================================
 
-DB_FILE = "demand_planning.db"
+DB_FILE = str(Path(__file__).resolve().parent / "demand_planning.db")
 
 
 # =========================================================
@@ -19,6 +20,7 @@ def get_connection():
     conn = sqlite3.connect(
         DB_FILE,
         timeout=30,
+        check_same_thread=False,
     )
 
     conn.row_factory = sqlite3.Row
