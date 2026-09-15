@@ -17,10 +17,26 @@ DB_FILE = "demand_planning.db"
 def get_connection():
 
     conn = sqlite3.connect(
-        DB_FILE
+        DB_FILE,
+        timeout=30,
     )
 
     conn.row_factory = sqlite3.Row
+
+    # -----------------------------------------------------
+    # SQLite lebih aman untuk aplikasi Streamlit yang
+    # dapat melakukan beberapa operasi database berdekatan.
+    # -----------------------------------------------------
+
+    try:
+
+        conn.execute(
+            "PRAGMA busy_timeout = 30000"
+        )
+
+    except Exception:
+
+        pass
 
     return conn
 
@@ -28,8 +44,6 @@ def get_connection():
 # =========================================================
 # HISTORY MONTHS HELPER
 # =========================================================
-#
-# CATATAN REVISI:
 #
 # forecasting.py menggunakan:
 #
@@ -41,12 +55,12 @@ def get_connection():
 #
 # sebagai penanda "gunakan semua histori".
 #
-# Database sebaiknya TIDAK menyimpan sentinel tersebut.
+# Database TIDAK menyimpan sentinel tersebut.
 # Database menyimpan JUMLAH HISTORI AKTUAL yang dipakai,
 # misalnya 8, 10, 12, dst.
 #
-# Karena itu helper di bawah hanya melakukan normalisasi
-# nilai yang masuk ke database.
+# Dengan begitu data history lama tetap kompatibel dengan
+# main.py dan forecasting.py.
 # =========================================================
 
 def normalize_history_months(
@@ -139,14 +153,6 @@ def normalize_history_months(
     # -----------------------------------------------------
     # Nilai <= 0
     # -----------------------------------------------------
-    #
-    # Jika allow_all=True:
-    #     0 / negatif = semua histori
-    #
-    # Jika allow_all=False:
-    #     database tetap membutuhkan angka positif,
-    #     sehingga gunakan default.
-    # -----------------------------------------------------
 
     if history_months <= 0:
 
@@ -180,112 +186,124 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
 
-    # -----------------------------------------------------
-    # CREATE TABLE
-    # -----------------------------------------------------
+    try:
 
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS forecast_history (
+        # -------------------------------------------------
+        # CREATE TABLE
+        # -------------------------------------------------
 
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS forecast_history (
 
-            nama_user TEXT NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            periode_forecast TEXT NOT NULL,
+                nama_user TEXT NOT NULL,
 
-            history_months INTEGER DEFAULT 3,
+                periode_forecast TEXT NOT NULL,
 
-            created_at TEXT NOT NULL,
+                history_months INTEGER DEFAULT 3,
 
-            status TEXT DEFAULT 'Saved',
+                created_at TEXT NOT NULL,
 
-            forecast_bbb TEXT,
+                status TEXT DEFAULT 'Saved',
 
-            forecast_bbt TEXT,
+                forecast_bbb TEXT,
 
-            summary TEXT
+                forecast_bbt TEXT,
 
-        )
-        """
-    )
+                summary TEXT
 
-    # -----------------------------------------------------
-    # MIGRATION DATABASE LAMA
-    # -----------------------------------------------------
-
-    cursor.execute(
-        """
-        PRAGMA table_info(
-            forecast_history
-        )
-        """
-    )
-
-    existing_columns = {
-        row["name"]
-        for row in cursor.fetchall()
-    }
-
-    # -----------------------------------------------------
-    # Kolom yang wajib tersedia
-    # -----------------------------------------------------
-
-    required_columns = {
-
-        "history_months":
-            "INTEGER DEFAULT 3",
-
-        "forecast_bbb":
-            "TEXT",
-
-        "forecast_bbt":
-            "TEXT",
-
-        "summary":
-            "TEXT",
-
-    }
-
-    # -----------------------------------------------------
-    # Tambahkan kolom jika belum ada
-    # -----------------------------------------------------
-
-    for (
-        column_name,
-        column_definition,
-    ) in required_columns.items():
-
-        if (
-            column_name
-            not in existing_columns
-        ):
-
-            cursor.execute(
-                f"""
-                ALTER TABLE forecast_history
-                ADD COLUMN
-                {column_name}
-                {column_definition}
-                """
             )
+            """
+        )
 
-    # -----------------------------------------------------
-    # CATATAN REVISI:
-    #
-    # Tidak ada perubahan schema baru.
-    #
-    # history_months tetap INTEGER agar kompatibel dengan
-    # database lama dan dengan main.py yang sudah ada.
-    #
-    # Mode "semua histori" dihitung oleh main.py /
-    # forecasting.py, kemudian database menerima jumlah
-    # histori aktual yang digunakan.
-    # -----------------------------------------------------
+        # -------------------------------------------------
+        # MIGRATION DATABASE LAMA
+        # -------------------------------------------------
 
-    conn.commit()
+        cursor.execute(
+            """
+            PRAGMA table_info(
+                forecast_history
+            )
+            """
+        )
 
-    conn.close()
+        existing_columns = {
+            row["name"]
+            for row in cursor.fetchall()
+        }
+
+        # -------------------------------------------------
+        # Kolom yang wajib tersedia
+        # -------------------------------------------------
+
+        required_columns = {
+
+            "history_months":
+                "INTEGER DEFAULT 3",
+
+            "forecast_bbb":
+                "TEXT",
+
+            "forecast_bbt":
+                "TEXT",
+
+            "summary":
+                "TEXT",
+
+        }
+
+        # -------------------------------------------------
+        # Tambahkan kolom jika belum ada
+        # -------------------------------------------------
+
+        for (
+            column_name,
+            column_definition,
+        ) in required_columns.items():
+
+            if (
+                column_name
+                not in existing_columns
+            ):
+
+                cursor.execute(
+                    f"""
+                    ALTER TABLE forecast_history
+                    ADD COLUMN
+                    {column_name}
+                    {column_definition}
+                    """
+                )
+
+        # -------------------------------------------------
+        # Normalisasi data history_months lama.
+        #
+        # Database tetap menyimpan angka positif.
+        # -------------------------------------------------
+
+        cursor.execute(
+            """
+            UPDATE forecast_history
+            SET history_months = 3
+            WHERE history_months IS NULL
+               OR history_months <= 0
+            """
+        )
+
+        conn.commit()
+
+    except Exception:
+
+        conn.rollback()
+
+        raise
+
+    finally:
+
+        conn.close()
 
 
 # =========================================================
@@ -473,18 +491,10 @@ def save_history(
         # VALIDASI HISTORY MONTHS
         # -------------------------------------------------
         #
-        # CATATAN REVISI:
-        #
-        # save_history() menyimpan angka aktual.
-        # Jadi None / "all" tidak disimpan sebagai mode.
-        #
-        # Jika main.py mengirim jumlah histori aktual,
-        # misalnya 8, maka yang disimpan adalah 8.
-        #
-        # Untuk keamanan, nilai kosong / invalid tetap
-        # dikembalikan ke default 3 agar database lama
-        # tetap kompatibel.
-        # -----------------------------------------------------
+        # Database menyimpan angka aktual.
+        # Mode semua histori sudah diselesaikan oleh main.py
+        # sebelum data masuk ke fungsi ini.
+        # -------------------------------------------------
 
         history_months = normalize_history_months(
             history_months,
@@ -511,14 +521,15 @@ def save_history(
         # -------------------------------------------------
         # SUMMARY → JSON
         #
-        # Termasuk informasi:
+        # Summary dapat berisi:
         #
         # BBB
         # BBT
         # WAPE
         # Accuracy
-        # XGBoost status
-        # dll.
+        # Best Method
+        # Recursive Forecasting status
+        # dan informasi forecasting lainnya.
         # -------------------------------------------------
 
         summary_json = (
@@ -649,6 +660,20 @@ def load_history_by_id(
     try:
 
         # -------------------------------------------------
+        # Validasi ID
+        # -------------------------------------------------
+
+        try:
+
+            history_id = int(
+                history_id
+            )
+
+        except Exception:
+
+            return None
+
+        # -------------------------------------------------
         # Ambil history
         # -------------------------------------------------
 
@@ -712,13 +737,6 @@ def load_history_by_id(
         # -------------------------------------------------
         # History months
         # -------------------------------------------------
-        #
-        # CATATAN REVISI:
-        #
-        # Nilai yang dibaca dari database harus tetap berupa
-        # angka positif karena database menyimpan jumlah
-        # histori aktual yang digunakan.
-        # -----------------------------------------------------
 
         history_months = (
             row["history_months"]
@@ -784,6 +802,20 @@ def delete_history(
     cursor = conn.cursor()
 
     try:
+
+        # -------------------------------------------------
+        # Validasi ID
+        # -------------------------------------------------
+
+        try:
+
+            history_id = int(
+                history_id
+            )
+
+        except Exception:
+
+            return False
 
         cursor.execute(
             """
@@ -885,3 +917,38 @@ def count_history():
     finally:
 
         conn.close()
+
+
+# =========================================================
+# MODULE TEST
+# =========================================================
+
+if __name__ == "__main__":
+
+    print(
+        "=" * 60
+    )
+
+    print(
+        "DATABASE MODULE"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    init_db()
+
+    print(
+        "Database       :",
+        DB_FILE,
+    )
+
+    print(
+        "Total history  :",
+        count_history(),
+    )
+
+    print(
+        "Status         : OK"
+    )

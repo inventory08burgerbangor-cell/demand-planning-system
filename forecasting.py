@@ -1853,6 +1853,594 @@ def prepare_item_history(
 
 
 # =========================================================
+# RECURSIVE FORECAST HELPERS
+# =========================================================
+
+def _prepare_item_actual_history(
+    df,
+    item_name,
+    value_column,
+    forecast_date,
+):
+    """
+    Mengambil seluruh histori ACTUAL satu item
+    sebelum forecast_date.
+
+    Berbeda dengan prepare_item_history():
+
+        prepare_item_history()
+            -> mengikuti history_months
+
+        _prepare_item_actual_history()
+            -> mengambil seluruh actual yang tersedia
+
+    Fungsi ini sengaja tidak dipakai untuk memilih
+    Best Method. Tujuannya hanya untuk mengetahui apakah
+    bulan-bulan intermediate memiliki ACTUAL sehingga
+    actual tersebut dapat meng-override forecast recursive.
+    """
+
+    empty_columns = [
+        "_periode",
+        "value",
+        "Satuan",
+    ]
+
+    if df is None or df.empty:
+        return pd.DataFrame(
+            columns=empty_columns
+        )
+
+    required_columns = [
+        "Bulan",
+        "Nama Barang",
+        value_column,
+    ]
+
+    for column in required_columns:
+        if column not in df.columns:
+            return pd.DataFrame(
+                columns=empty_columns
+            )
+
+    work = df.copy()
+
+    work["Nama Barang"] = (
+        work["Nama Barang"]
+        .astype(str)
+        .str.strip()
+    )
+
+    work = work.loc[
+        work["Nama Barang"]
+        == str(item_name).strip()
+    ].copy()
+
+    if work.empty:
+        return pd.DataFrame(
+            columns=empty_columns
+        )
+
+    work["_periode"] = work["Bulan"].apply(
+        lambda x: parse_period(
+            x,
+            default_year=forecast_date.year,
+        )
+    )
+
+    work = work[
+        work["_periode"].notna()
+    ].copy()
+
+    work = work[
+        work["_periode"] < forecast_date
+    ].copy()
+
+    if work.empty:
+        return pd.DataFrame(
+            columns=empty_columns
+        )
+
+    work["value"] = pd.to_numeric(
+        work[value_column],
+        errors="coerce",
+    ).fillna(0.0)
+
+    work["value"] = work["value"].clip(
+        lower=0
+    )
+
+    if "Satuan" in work.columns:
+        work["Satuan"] = (
+            work["Satuan"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+    else:
+        work["Satuan"] = ""
+
+    grouped = (
+        work.groupby(
+            "_periode",
+            as_index=False,
+        )
+        .agg(
+            value=("value", "sum"),
+            Satuan=("Satuan", "first"),
+        )
+        .sort_values("_periode")
+        .reset_index(drop=True)
+    )
+
+    return grouped
+
+
+def _next_period(period):
+    """
+    Menghasilkan periode bulan berikutnya.
+    """
+
+    parsed = parse_period(period)
+
+    if parsed is None:
+        return None
+
+    return (
+        parsed
+        + pd.DateOffset(months=1)
+    ).normalize()
+
+
+def _build_actual_map(
+    actual_history,
+):
+    """
+    Membuat map:
+
+        Timestamp -> actual value
+
+    dari histori actual.
+
+    Map ini dipakai agar actual intermediate selalu
+    meng-override forecast recursive.
+    """
+
+    actual_map = {}
+
+    if (
+        actual_history is None
+        or actual_history.empty
+    ):
+        return actual_map
+
+    for _, row in actual_history.iterrows():
+
+        period = row.get(
+            "_periode"
+        )
+
+        value = row.get(
+            "value"
+        )
+
+        period = parse_period(
+            period
+        )
+
+        if period is None:
+            continue
+
+        actual_map[period] = max(
+            0.0,
+            _safe_float(
+                value,
+                default=0.0,
+            ),
+        )
+
+    return actual_map
+
+
+def recursive_forecast_to_target(
+    values,
+    start_period,
+    target_period,
+    method,
+    actual_map=None,
+    history_months=None,
+):
+    """
+    Forecast recursive / iterative sampai target_period.
+
+    Contoh:
+
+        actual terakhir = Agustus
+        target = Oktober
+
+        Agustus
+            |
+            v
+        forecast September
+            |
+            v
+        forecast Oktober
+
+    Jika September actual tersedia:
+
+        Agustus
+            |
+            v
+        actual September
+            |
+            v
+        forecast Oktober
+
+    Parameter:
+
+        values
+            histori aktual awal yang dipakai model.
+
+        start_period
+            periode terakhir dari values.
+
+        target_period
+            periode target forecast.
+
+        method
+            Best Method yang sudah dipilih dari actual history.
+
+        actual_map
+            map seluruh actual yang tersedia sebelum target.
+
+        history_months
+            jika angka, buffer model dibatasi ke N titik
+            terakhir. Jika None, seluruh buffer dipakai.
+
+    Return:
+
+        {
+            "forecast": nilai target,
+            "steps": [
+                {
+                    "period": Timestamp,
+                    "value": float,
+                    "source": "actual" / "forecast",
+                },
+                ...
+            ],
+            "history_values": array nilai final,
+        }
+
+    PENTING:
+
+        Forecast intermediate hanya menjadi input model
+        recursive. Forecast tersebut tidak dimasukkan
+        ke backtesting/WAPE.
+    """
+
+    values = np.asarray(
+        values,
+        dtype=float,
+    )
+
+    values = np.nan_to_num(
+        values,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+
+    values = np.maximum(
+        values,
+        0.0,
+    )
+
+    start_period = parse_period(
+        start_period
+    )
+
+    target_period = parse_period(
+        target_period
+    )
+
+    if (
+        start_period is None
+        or target_period is None
+    ):
+        return {
+            "forecast": np.nan,
+            "steps": [],
+            "history_values": values,
+        }
+
+    if target_period <= start_period:
+        return {
+            "forecast": (
+                float(values[-1])
+                if len(values) > 0
+                else np.nan
+            ),
+            "steps": [],
+            "history_values": values,
+        }
+
+    if actual_map is None:
+        actual_map = {}
+
+    history_limit = _normalize_history_months(
+        history_months
+    )
+
+    buffer_values = list(
+        values.astype(float)
+    )
+
+    current_period = start_period
+    steps = []
+
+    while current_period < target_period:
+
+        next_period = _next_period(
+            current_period
+        )
+
+        if next_period is None:
+            break
+
+        # -------------------------------------------------
+        # Actual tersedia -> actual harus override
+        # forecast recursive.
+        # -------------------------------------------------
+
+        if next_period in actual_map:
+
+            next_value = max(
+                0.0,
+                _safe_float(
+                    actual_map[next_period],
+                    default=0.0,
+                ),
+            )
+
+            source = "actual"
+
+        else:
+
+            prediction = forecast_with_method(
+                np.asarray(
+                    buffer_values,
+                    dtype=float,
+                ),
+                method,
+            )
+
+            if not np.isfinite(
+                prediction
+            ):
+                return {
+                    "forecast": np.nan,
+                    "steps": steps,
+                    "history_values": np.asarray(
+                        buffer_values,
+                        dtype=float,
+                    ),
+                }
+
+            next_value = max(
+                0.0,
+                float(prediction),
+            )
+
+            source = "forecast"
+
+        # -------------------------------------------------
+        # Append actual / forecast sebagai titik histori
+        # untuk step berikutnya.
+        # -------------------------------------------------
+
+        buffer_values.append(
+            next_value
+        )
+
+        # -------------------------------------------------
+        # Respect history_months untuk buffer recursive.
+        #
+        # Catatan:
+        # history_months adalah jumlah titik yang digunakan
+        # model, bukan jumlah actual. Forecast intermediate
+        # tetap boleh masuk ke buffer karena memang itu
+        # inti recursive forecasting.
+        # -------------------------------------------------
+
+        if (
+            history_limit is not None
+            and history_limit > 0
+            and len(buffer_values)
+            > history_limit
+        ):
+
+            buffer_values = (
+                buffer_values[
+                    -history_limit:
+                ]
+            )
+
+        steps.append(
+            {
+                "period": next_period,
+                "value": next_value,
+                "source": source,
+            }
+        )
+
+        current_period = next_period
+
+    if not steps:
+        forecast_value = (
+            float(buffer_values[-1])
+            if buffer_values
+            else np.nan
+        )
+    else:
+        forecast_value = float(
+            steps[-1]["value"]
+        )
+
+    return {
+        "forecast": forecast_value,
+        "steps": steps,
+        "history_values": np.asarray(
+            buffer_values,
+            dtype=float,
+        ),
+    }
+
+
+def _forecast_item_recursive(
+    df,
+    item_name,
+    value_column,
+    forecast_date,
+    history_months=None,
+):
+    """
+    Menjalankan seluruh proses forecast satu item:
+
+        1. Ambil histori sesuai history_months.
+        2. Pilih Best Method berdasarkan actual history.
+        3. Cari actual intermediate.
+        4. Forecast recursive sampai target.
+        5. Actual intermediate selalu override forecast.
+        6. WAPE tetap berasal dari backtesting actual.
+
+    Return object mempertahankan informasi yang diperlukan
+    forecast_stream().
+    """
+
+    history = prepare_item_history(
+        df=df,
+        item_name=item_name,
+        value_column=value_column,
+        forecast_date=forecast_date,
+        history_months=history_months,
+    )
+
+    history_count = len(
+        history
+    )
+
+    satuan = ""
+
+    if (
+        not history.empty
+        and "Satuan" in history.columns
+    ):
+
+        satuan_values = (
+            history["Satuan"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+        )
+
+        if not satuan_values.empty:
+            satuan = (
+                satuan_values.iloc[-1]
+            )
+
+    if history_count < 3:
+
+        return {
+            "history": history,
+            "history_count": history_count,
+            "satuan": satuan,
+            "best": {
+                "method": None,
+                "wape": np.nan,
+                "forecast": np.nan,
+                "actual": [],
+                "backtest_forecast": [],
+            },
+            "forecast": np.nan,
+            "recursive_steps": [],
+        }
+
+    values = (
+        history["value"]
+        .astype(float)
+        .to_numpy()
+    )
+
+    # -----------------------------------------------------
+    # Best Method HARUS dipilih hanya dari actual history.
+    # -----------------------------------------------------
+
+    best = auto_best_method(
+        values
+    )
+
+    method = best["method"]
+
+    if method is None:
+
+        return {
+            "history": history,
+            "history_count": history_count,
+            "satuan": satuan,
+            "best": best,
+            "forecast": np.nan,
+            "recursive_steps": [],
+        }
+
+    # -----------------------------------------------------
+    # Jika target langsung bulan berikutnya, forecast biasa.
+    # Jika target lebih jauh, jalankan recursive.
+    # -----------------------------------------------------
+
+    start_period = parse_period(
+        history["_periode"].iloc[-1]
+    )
+
+    actual_history = (
+        _prepare_item_actual_history(
+            df=df,
+            item_name=item_name,
+            value_column=value_column,
+            forecast_date=forecast_date,
+        )
+    )
+
+    actual_map = _build_actual_map(
+        actual_history
+    )
+
+    recursive_result = (
+        recursive_forecast_to_target(
+            values=values,
+            start_period=start_period,
+            target_period=forecast_date,
+            method=method,
+            actual_map=actual_map,
+            history_months=history_months,
+        )
+    )
+
+    return {
+        "history": history,
+        "history_count": history_count,
+        "satuan": satuan,
+        "best": best,
+        "forecast": recursive_result[
+            "forecast"
+        ],
+        "recursive_steps": recursive_result[
+            "steps"
+        ],
+    }
+
+
+# =========================================================
 # FORECAST ONE STREAM
 # =========================================================
 
@@ -1880,6 +2468,27 @@ def forecast_stream(
 
         8
             -> maksimal 8 bulan terakhir
+
+    Forecast multi-step dilakukan secara recursive.
+
+    Contoh:
+
+        actual Jan-Aug
+        target Oktober
+
+        -> pilih Best Method dari Jan-Aug
+        -> forecast September
+        -> masukkan forecast September ke buffer
+        -> forecast Oktober
+
+    Jika actual September tersedia:
+
+        -> gunakan actual September
+        -> forecast Oktober
+
+    Forecast recursive intermediate TIDAK dimasukkan
+    ke WAPE. WAPE tetap hanya berasal dari
+    backtesting actual.
     """
 
     empty_summary = {
@@ -1948,41 +2557,43 @@ def forecast_stream(
 
     for item_name in items:
 
-        history = prepare_item_history(
-            df=df,
-            item_name=item_name,
-            value_column=value_column,
-            forecast_date=forecast_date,
-            history_months=history_months,
-        )
-
-        history_count = len(
-            history
-        )
-
-        # -------------------------------------------------
-        # Satuan
-        # -------------------------------------------------
-
-        satuan = ""
-
-        if (
-            not history.empty
-            and "Satuan" in history.columns
-        ):
-
-            satuan_values = (
-                history["Satuan"]
-                .dropna()
-                .astype(str)
-                .str.strip()
+        item_result = (
+            _forecast_item_recursive(
+                df=df,
+                item_name=item_name,
+                value_column=value_column,
+                forecast_date=forecast_date,
+                history_months=history_months,
             )
+        )
 
-            if not satuan_values.empty:
+        history = item_result[
+            "history"
+        ]
 
-                satuan = (
-                    satuan_values.iloc[-1]
-                )
+        history_count = item_result[
+            "history_count"
+        ]
+
+        satuan = item_result[
+            "satuan"
+        ]
+
+        best = item_result[
+            "best"
+        ]
+
+        method = best[
+            "method"
+        ]
+
+        wape = best[
+            "wape"
+        ]
+
+        forecast = item_result[
+            "forecast"
+        ]
 
         # -------------------------------------------------
         # Minimum 3 bulan
@@ -2005,24 +2616,6 @@ def forecast_stream(
 
             continue
 
-        values = (
-            history["value"]
-            .astype(float)
-            .to_numpy()
-        )
-
-        # -------------------------------------------------
-        # Auto Best Method
-        # -------------------------------------------------
-
-        best = auto_best_method(
-            values
-        )
-
-        method = best["method"]
-        wape = best["wape"]
-        forecast = best["forecast"]
-
         if method is not None:
 
             selected_methods.append(
@@ -2030,7 +2623,10 @@ def forecast_stream(
             )
 
         # -------------------------------------------------
-        # Aggregate backtest
+        # Aggregate backtest.
+        #
+        # HANYA menggunakan actual dan forecast hasil
+        # backtesting. Recursive forecast tidak ikut.
         # -------------------------------------------------
 
         if (
@@ -2265,6 +2861,9 @@ def run_forecasting(
     Jika history_months=3:
         -> maksimal 3 bulan terakhir dipakai.
 
+    Forecast ke bulan yang lebih jauh akan dilakukan
+    secara recursive.
+
     Return:
 
         df_bbb,
@@ -2462,6 +3061,46 @@ def get_xgboost_status(
     }
 
 
+def get_recursive_forecasting_status() -> Dict:
+    """
+    Helper untuk mengetahui status fitur recursive
+    forecasting.
+
+    Fitur ini selalu tersedia karena recursive forecasting
+    menggunakan method yang sudah tersedia di module ini.
+    """
+
+    return {
+        "available": True,
+        "enabled": True,
+        "message": (
+            "Recursive forecasting aktif. "
+            "Jika periode target lebih dari satu bulan "
+            "setelah histori actual terakhir, forecast "
+            "dihitung bertahap sampai target. Actual "
+            "intermediate selalu meng-override forecast."
+        ),
+    }
+
+
+def explain_recursive_forecast() -> str:
+    """
+    Penjelasan singkat yang dapat ditampilkan oleh UI.
+    """
+
+    return (
+        "Recursive forecasting bekerja bertahap. "
+        "Contoh: jika actual tersedia sampai Agustus "
+        "dan target Oktober, sistem memilih Best Method "
+        "berdasarkan actual Jan-Agustus, lalu forecast "
+        "September. Forecast September dipakai sebagai "
+        "input untuk forecast Oktober. Jika actual "
+        "September tersedia, actual September digunakan "
+        "dan forecast September tidak dibuat. Forecast "
+        "intermediate tidak digunakan untuk menghitung WAPE."
+    )
+
+
 # =========================================================
 # MODULE TEST
 # =========================================================
@@ -2488,6 +3127,13 @@ if __name__ == "__main__":
     print(
         "XGBoost min history :",
         XGBOOST_MIN_HISTORY,
+    )
+
+    print(
+        "Recursive forecasting :",
+        get_recursive_forecasting_status()[
+            "enabled"
+        ],
     )
 
     print()

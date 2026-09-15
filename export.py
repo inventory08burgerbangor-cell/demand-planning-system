@@ -29,6 +29,19 @@ EXPORT_COLUMNS = [
 ]
 
 
+# Kolom tambahan yang dapat dipakai oleh forecasting recursive.
+# Tidak diwajibkan agar tetap kompatibel dengan dataframe lama.
+OPTIONAL_RECURSIVE_COLUMNS = [
+    "Periode",
+    "Forecast Period",
+    "Target Period",
+    "Sumber",
+    "Source",
+    "Method",
+    "Recursive",
+]
+
+
 # =========================================================
 # HELPER
 # =========================================================
@@ -66,6 +79,75 @@ def _safe_dataframe(data):
         return pd.DataFrame()
 
 
+def _safe_text(value):
+    """
+    Mengubah nilai menjadi text yang aman
+    untuk metadata atau nama file.
+    """
+
+    if value is None:
+
+        return ""
+
+    try:
+
+        return str(value).strip()
+
+    except Exception:
+
+        return ""
+
+
+def _numeric_series(
+    series,
+    decimals=2,
+):
+    """
+    Konversi Series ke numeric dengan aman.
+
+    Nilai yang tidak valid menjadi NaN.
+    """
+
+    return pd.to_numeric(
+        series,
+        errors="coerce",
+    ).round(
+        decimals
+    )
+
+
+def _ordered_columns(
+    df,
+    preferred_columns,
+):
+    """
+    Menempatkan kolom prioritas di depan,
+    lalu mempertahankan kolom lainnya.
+    """
+
+    if df.empty:
+
+        return df
+
+    existing_columns = [
+        col
+        for col in preferred_columns
+        if col in df.columns
+    ]
+
+    other_columns = [
+        col
+        for col in df.columns
+        if col not in existing_columns
+    ]
+
+    return df[
+        existing_columns
+        +
+        other_columns
+    ]
+
+
 # =========================================================
 # FORMAT FORECAST DATAFRAME
 # =========================================================
@@ -76,6 +158,9 @@ def _format_forecast_dataframe(
     """
     Menyiapkan DataFrame forecast
     agar rapi ketika masuk Excel.
+
+    Tetap mempertahankan kolom tambahan yang mungkin
+    berasal dari proses recursive forecasting.
     """
 
     df = _safe_dataframe(
@@ -101,23 +186,10 @@ def _format_forecast_dataframe(
         "Forecast",
     ]
 
-    existing_columns = [
-        col
-        for col in preferred_columns
-        if col in result.columns
-    ]
-
-    other_columns = [
-        col
-        for col in result.columns
-        if col not in existing_columns
-    ]
-
-    result = result[
-        existing_columns
-        +
-        other_columns
-    ]
+    result = _ordered_columns(
+        result,
+        preferred_columns,
+    )
 
     # -----------------------------------------------------
     # Rename
@@ -154,12 +226,12 @@ def _format_forecast_dataframe(
 
         result[
             "Forecast OUT"
-        ] = pd.to_numeric(
+        ] = _numeric_series(
             result[
                 "Forecast OUT"
             ],
-            errors="coerce",
-        ).round(2)
+            decimals=2,
+        )
 
     # -----------------------------------------------------
     # Numeric WAPE
@@ -172,12 +244,12 @@ def _format_forecast_dataframe(
 
         result[
             "WAPE (%)"
-        ] = pd.to_numeric(
+        ] = _numeric_series(
             result[
                 "WAPE (%)"
             ],
-            errors="coerce",
-        ).round(2)
+            decimals=2,
+        )
 
     # -----------------------------------------------------
     # Numeric Histori
@@ -188,17 +260,54 @@ def _format_forecast_dataframe(
         in result.columns
     ):
 
-        result[
-            "Jumlah Histori"
-        ] = pd.to_numeric(
+        history_numeric = pd.to_numeric(
             result[
                 "Jumlah Histori"
             ],
             errors="coerce",
-        ).fillna(
+        )
+
+        result[
+            "Jumlah Histori"
+        ] = history_numeric.fillna(
             0
         ).astype(
             int
+        )
+
+    # -----------------------------------------------------
+    # Normalize optional recursive flag
+    # -----------------------------------------------------
+
+    if "Recursive" in result.columns:
+
+        result[
+            "Recursive"
+        ] = result[
+            "Recursive"
+        ].map(
+            lambda value:
+                "Ya"
+                if str(value).strip().lower()
+                in {
+                    "true",
+                    "1",
+                    "yes",
+                    "y",
+                    "ya",
+                }
+                else (
+                    "Tidak"
+                    if str(value).strip().lower()
+                    in {
+                        "false",
+                        "0",
+                        "no",
+                        "n",
+                        "tidak",
+                    }
+                    else value
+                )
         )
 
     return result
@@ -213,6 +322,113 @@ def _empty_export_dataframe():
     return pd.DataFrame(
         columns=EXPORT_COLUMNS
     )
+
+
+# =========================================================
+# EMPTY RECURSIVE DETAIL
+# =========================================================
+
+def _empty_recursive_dataframe():
+
+    return pd.DataFrame(
+        columns=[
+            "Nama Barang",
+            "Periode",
+            "Nilai",
+            "Sumber",
+            "Method",
+        ]
+    )
+
+
+# =========================================================
+# FORMAT RECURSIVE DETAIL
+# =========================================================
+
+def _format_recursive_dataframe(
+    data
+):
+    """
+    Menyiapkan detail recursive forecasting.
+
+    Fungsi ini opsional dan tidak mengubah format
+    forecast utama.
+    """
+
+    df = _safe_dataframe(
+        data
+    )
+
+    if df.empty:
+
+        return _empty_recursive_dataframe()
+
+    result = df.copy()
+
+    # -----------------------------------------------------
+    # Rename nilai internal jika tersedia
+    # -----------------------------------------------------
+
+    rename_map = {}
+
+    if (
+        "Nilai"
+        in result.columns
+    ):
+
+        rename_map[
+            "Nilai"
+        ] = "Nilai Forecast / Actual"
+
+    if (
+        "Method"
+        in result.columns
+    ):
+
+        rename_map[
+            "Method"
+        ] = "Metode"
+
+    result = result.rename(
+        columns=rename_map
+    )
+
+    # -----------------------------------------------------
+    # Numeric value
+    # -----------------------------------------------------
+
+    if (
+        "Nilai Forecast / Actual"
+        in result.columns
+    ):
+
+        result[
+            "Nilai Forecast / Actual"
+        ] = _numeric_series(
+            result[
+                "Nilai Forecast / Actual"
+            ],
+            decimals=2,
+        )
+
+    # -----------------------------------------------------
+    # Prioritas kolom detail
+    # -----------------------------------------------------
+
+    preferred_columns = [
+        "Nama Barang",
+        "Periode",
+        "Nilai Forecast / Actual",
+        "Sumber",
+        "Metode",
+    ]
+
+    result = _ordered_columns(
+        result,
+        preferred_columns,
+    )
+
+    return result
 
 
 # =========================================================
@@ -400,12 +616,75 @@ def _format_worksheet(
             )
 
     # -----------------------------------------------------
+    # Detail recursive value
+    # -----------------------------------------------------
+
+    if (
+        "Nilai Forecast / Actual"
+        in headers
+    ):
+
+        column_number = (
+            headers[
+                "Nilai Forecast / Actual"
+            ]
+        )
+
+        for row in worksheet.iter_rows(
+            min_row=2,
+            min_col=column_number,
+            max_col=column_number,
+        ):
+
+            row[0].number_format = (
+                "#,##0.00"
+            )
+
+    # -----------------------------------------------------
     # Tinggi header
     # -----------------------------------------------------
 
     worksheet.row_dimensions[
         1
     ].height = 24
+
+
+# =========================================================
+# WRITE DETAIL SHEET
+# =========================================================
+
+def _write_dataframe_sheet(
+    writer,
+    dataframe,
+    sheet_name,
+    empty_dataframe=None,
+):
+    """
+    Helper penulisan sheet agar seluruh sheet
+    konsisten.
+    """
+
+    df = _safe_dataframe(
+        dataframe
+    )
+
+    if df.empty:
+
+        if empty_dataframe is None:
+
+            df = pd.DataFrame()
+
+        else:
+
+            df = _safe_dataframe(
+                empty_dataframe
+            )
+
+    df.to_excel(
+        writer,
+        sheet_name=sheet_name,
+        index=False,
+    )
 
 
 # =========================================================
@@ -417,15 +696,25 @@ def export_forecast_excel(
     forecast_bbt=None,
     periode_forecast="",
     nama_user="",
+    recursive_detail_bbb=None,
+    recursive_detail_bbt=None,
 ):
     """
     Membuat file Excel hasil forecasting.
 
-    Sheet:
+    Sheet utama:
 
     1. Forecast Bulanan
     2. Detail BBB
     3. Detail BBT
+
+    Sheet tambahan bila detail recursive diberikan:
+
+    4. Recursive BBB
+    5. Recursive BBT
+
+    Parameter recursive_detail_bbb dan recursive_detail_bbt
+    bersifat opsional agar pemanggilan lama tetap kompatibel.
 
     Return:
         bytes Excel yang bisa digunakan
@@ -449,6 +738,22 @@ def export_forecast_excel(
     df_bbt = (
         _format_forecast_dataframe(
             forecast_bbt
+        )
+    )
+
+    # -----------------------------------------------------
+    # Prepare recursive detail
+    # -----------------------------------------------------
+
+    df_recursive_bbb = (
+        _format_recursive_dataframe(
+            recursive_detail_bbb
+        )
+    )
+
+    df_recursive_bbt = (
+        _format_recursive_dataframe(
+            recursive_detail_bbt
         )
     )
 
@@ -548,46 +853,48 @@ def export_forecast_excel(
         # DETAIL BBB
         # =================================================
 
-        if df_bbb.empty:
-
-            (
-                _empty_export_dataframe()
-                .to_excel(
-                    writer,
-                    sheet_name="Detail BBB",
-                    index=False,
-                )
-            )
-
-        else:
-
-            df_bbb.to_excel(
-                writer,
-                sheet_name="Detail BBB",
-                index=False,
-            )
+        _write_dataframe_sheet(
+            writer,
+            df_bbb,
+            "Detail BBB",
+            _empty_export_dataframe(),
+        )
 
         # =================================================
         # SHEET 3
         # DETAIL BBT
         # =================================================
 
-        if df_bbt.empty:
+        _write_dataframe_sheet(
+            writer,
+            df_bbt,
+            "Detail BBT",
+            _empty_export_dataframe(),
+        )
 
-            (
-                _empty_export_dataframe()
-                .to_excel(
-                    writer,
-                    sheet_name="Detail BBT",
-                    index=False,
-                )
+        # =================================================
+        # SHEET 4
+        # RECURSIVE BBB
+        # =================================================
+
+        if not df_recursive_bbb.empty:
+
+            df_recursive_bbb.to_excel(
+                writer,
+                sheet_name="Recursive BBB",
+                index=False,
             )
 
-        else:
+        # =================================================
+        # SHEET 5
+        # RECURSIVE BBT
+        # =================================================
 
-            df_bbt.to_excel(
+        if not df_recursive_bbt.empty:
+
+            df_recursive_bbt.to_excel(
                 writer,
-                sheet_name="Detail BBT",
+                sheet_name="Recursive BBT",
                 index=False,
             )
 
@@ -609,17 +916,27 @@ def export_forecast_excel(
         # WORKBOOK METADATA
         # =================================================
 
+        periode_text = _safe_text(
+            periode_forecast
+        )
+
+        user_text = _safe_text(
+            nama_user
+        )
+
         workbook.properties.title = (
             "Demand Planning Forecast"
         )
 
         workbook.properties.subject = (
-            f"Forecast {periode_forecast}"
+            f"Forecast {periode_text}"
+            if periode_text
+            else "Demand Forecast"
         )
 
         workbook.properties.creator = (
-            nama_user
-            if nama_user
+            user_text
+            if user_text
             else "Demand Planner"
         )
 
@@ -630,7 +947,8 @@ def export_forecast_excel(
 
         workbook.properties.keywords = (
             "Demand Planning, "
-            "Forecast, BBB, BBT"
+            "Forecast, BBB, BBT, "
+            "Recursive Forecast"
         )
 
     # -----------------------------------------------------
@@ -656,9 +974,9 @@ def generate_export_filename(
     Demand_Planning_September_2026.xlsx
     """
 
-    periode = str(
+    periode = _safe_text(
         periode_forecast
-    ).strip()
+    )
 
     if not periode:
 
@@ -704,4 +1022,114 @@ def generate_export_filename(
     return (
         "Demand_Planning_"
         f"{periode}.xlsx"
+    )
+
+
+# =========================================================
+# TEST EXPORT
+# =========================================================
+
+if __name__ == "__main__":
+
+    sample_bbb = pd.DataFrame(
+        [
+            {
+                "Nama Barang": "Contoh Barang A",
+                "Satuan": "PCS",
+                "Histori": 8,
+                "Best Method": "MA3",
+                "WAPE": 12.35,
+                "Forecast": 125.50,
+            },
+        ]
+    )
+
+    sample_bbt = pd.DataFrame(
+        [
+            {
+                "Nama Barang": "Contoh Barang B",
+                "Satuan": "BOX",
+                "Histori": 8,
+                "Best Method": "WMA3",
+                "WAPE": 8.75,
+                "Forecast": 98.25,
+            },
+        ]
+    )
+
+    sample_recursive_bbb = pd.DataFrame(
+        [
+            {
+                "Nama Barang": "Contoh Barang A",
+                "Periode": "2026-08",
+                "Nilai": 100,
+                "Sumber": "actual",
+                "Method": "Actual",
+            },
+            {
+                "Nama Barang": "Contoh Barang A",
+                "Periode": "2026-09",
+                "Nilai": 110,
+                "Sumber": "forecast",
+                "Method": "MA3",
+            },
+            {
+                "Nama Barang": "Contoh Barang A",
+                "Periode": "2026-10",
+                "Nilai": 120,
+                "Sumber": "forecast",
+                "Method": "MA3",
+            },
+        ]
+    )
+
+    sample_recursive_bbt = pd.DataFrame(
+        [
+            {
+                "Nama Barang": "Contoh Barang B",
+                "Periode": "2026-08",
+                "Nilai": 90,
+                "Sumber": "actual",
+                "Method": "Actual",
+            },
+            {
+                "Nama Barang": "Contoh Barang B",
+                "Periode": "2026-09",
+                "Nilai": 95,
+                "Sumber": "forecast",
+                "Method": "WMA3",
+            },
+        ]
+    )
+
+    excel_bytes = export_forecast_excel(
+        forecast_bbb=sample_bbb,
+        forecast_bbt=sample_bbt,
+        periode_forecast="October 2026",
+        nama_user="Demand Planner",
+        recursive_detail_bbb=sample_recursive_bbb,
+        recursive_detail_bbt=sample_recursive_bbt,
+    )
+
+    filename = generate_export_filename(
+        "October 2026"
+    )
+
+    output_path = "export_test.xlsx"
+
+    with open(
+        output_path,
+        "wb",
+    ) as file:
+
+        file.write(
+            excel_bytes
+        )
+
+    print(
+        f"Export berhasil: {output_path}"
+    )
+
+    print(
+        f"Nama file: {filename}"
     )

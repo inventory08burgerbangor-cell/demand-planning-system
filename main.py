@@ -6,6 +6,8 @@ from forecasting import (
     parse_period,
     XGBOOST_AVAILABLE,
     XGBOOST_MIN_HISTORY,
+    get_recursive_forecasting_status,
+    explain_recursive_forecast,
 )
 
 from database import (
@@ -1896,8 +1898,88 @@ Untuk bulan forecast yang belum terjadi, actual belum tersedia sehingga error ak
             """,
         },
 
-    ],
 
+        {
+            "title": "Forecast — Recursive Forecasting (Bertahap)",
+            "content": """
+### Recursive Forecasting
+
+Sistem menggunakan **recursive forecasting** jika periode target lebih jauh dari actual terakhir yang tersedia. Artinya forecast tidak langsung melompat ke bulan target, tetapi dihitung **bulan demi bulan**.
+
+### Contoh: Actual sampai Agustus, Target Oktober
+
+Misalnya actual tersedia Januari sampai Agustus dan user memilih **Forecast = Oktober**. Sistem akan:
+
+1. Menggunakan actual Januari–Agustus sebagai histori awal.
+2. Melakukan backtesting MA / WMA / XGBoost.
+3. Menghitung WAPE setiap metode.
+4. Memilih **Best Method** dengan WAPE terendah.
+5. Menghitung forecast September.
+6. Memasukkan forecast September sebagai input sementara.
+7. Menghitung forecast Oktober.
+
+Jadi sistem tidak melompati September.
+
+---
+
+### Jika Actual Intermediate Sudah Tersedia
+
+Sistem **tidak mengganti actual dengan forecast**. Contoh: actual tersedia sampai Agustus, September ternyata sudah memiliki actual, dan target adalah Oktober. Maka yang digunakan adalah:
+
+**Januari–Agustus Actual + September Actual → Forecast Oktober**
+
+Prinsipnya:
+
+> **Actual selalu meng-override forecast intermediate.**
+
+---
+
+### Contoh Target November
+
+Jika actual terakhir Agustus dan target November:
+
+**Forecast September → Forecast Oktober → Forecast November**
+
+Namun bila actual Oktober tersedia, prosesnya menjadi:
+
+**Forecast September → Actual Oktober → Forecast November**
+
+Dengan begitu data aktual terbaru selalu diprioritaskan.
+
+---
+
+### Apakah Forecast Recursive Masuk ke WAPE?
+
+**Tidak.** WAPE tetap dihitung dari **backtesting terhadap actual historis**. Forecast September atau Oktober yang dibuat hanya untuk mencapai target masa depan tidak dianggap sebagai actual dan tidak dimasukkan sebagai pasangan error WAPE.
+
+Jadi:
+
+- **WAPE** = ukuran performa metode berdasarkan histori actual.
+- **Recursive Forecast** = mekanisme untuk mencapai bulan target secara bertahap.
+
+---
+
+### Pengaruh Periode Histori
+
+Jika mode manual menggunakan **3 bulan histori**, setiap langkah recursive memakai maksimal 3 nilai terakhir yang tersedia pada saat langkah tersebut.
+
+Jika menggunakan **8 bulan histori**, setiap langkah memakai maksimal 8 nilai terakhir.
+
+Jika **Gunakan semua histori tersedia** aktif, seluruh histori sebelum target digunakan sesuai aturan module forecasting.
+
+---
+
+### Ringkasan
+
+1. **Best Method dipilih dari actual histori.**
+2. **Target jauh dihitung bertahap per bulan.**
+3. **Actual intermediate selalu lebih diprioritaskan.**
+4. **Forecast recursive tidak digunakan untuk menghitung WAPE.**
+
+Dengan mekanisme ini, forecast Oktober atau November tetap dapat dibuat walaupun actual terbaru baru tersedia sampai Agustus, selama histori awal memenuhi syarat forecasting.
+            """,
+        },
+    ],
     "🕘 History": [
 
         {
@@ -1981,10 +2063,87 @@ History dan Data OUT merupakan dua bagian penyimpanan yang berbeda.
 
 
 # =========================================================
+# COMPLETE HELP CONTENT
+# =========================================================
+#
+# HELP_CONTENT di atas tetap menjadi sumber bantuan per-menu.
+# HELP_ALL_PAGES hanya membuat versi gabungan untuk tombol
+# Bantuan Lengkap di sidebar.
+#
+# Setiap halaman diberi nama menu supaya pengguna selalu tahu
+# bagian aplikasi yang sedang dijelaskan.
+
+HELP_ALL_PAGES = [
+    {
+        "title": "📖 Bantuan Lengkap — Panduan Aplikasi",
+        "content": """
+### Selamat Datang di Demand Planning System
+
+Halaman **Bantuan Lengkap** berisi seluruh keterangan dari setiap menu aplikasi.
+
+Urutan panduan:
+
+1. 📊 Dashboard
+2. 📦 Data OUT
+3. ⚙️ Setting
+4. ✅ Validasi
+5. 🔮 Forecast
+6. 🕘 History
+
+### Cara Membaca Bantuan
+
+Gunakan tombol **Next →** untuk membaca bagian berikutnya dan **← Back** untuk kembali.
+
+Contoh-contoh di halaman berikut menggunakan alur sederhana agar fungsi aplikasi mudah dipahami.
+
+### Alur Singkat Penggunaan
+
+**Data OUT → Setting → Validasi → Forecast → Dashboard / History**
+
+Data OUT menjadi sumber histori. Setting menentukan target forecast dan periode histori. Validasi memastikan data layak digunakan. Forecast melakukan perhitungan. Dashboard menampilkan hasil, sedangkan History menyimpan dan memuat kembali hasil forecast.
+        """,
+    },
+]
+
+for _menu_name in MENU_OPTIONS:
+    for _page in HELP_CONTENT.get(_menu_name, []):
+        HELP_ALL_PAGES.append(
+            {
+                "title": f"{_menu_name} — {_page.get('title', 'Bantuan')}",
+                "content": _page.get("content", ""),
+            }
+        )
+
+HELP_CONTENT["__ALL__"] = HELP_ALL_PAGES
+
+
+def open_help(menu_name, page=1):
+    """Membuka bantuan dengan konteks menu tertentu."""
+
+    st.session_state.help_menu = menu_name
+    st.session_state.help_page = int(page)
+    st.session_state.show_help = True
+    st.rerun()
+
+
+def render_context_help(menu_name, key_suffix):
+    """Tombol bantuan yang hanya membuka dokumentasi menu aktif."""
+
+    if st.button(
+        f"❓ Bantuan {menu_name}",
+        use_container_width=False,
+        key=key_suffix,
+        help=f"Buka bantuan khusus untuk {menu_name}.",
+    ):
+        open_help(menu_name, 1)
+
+
+
+# =========================================================
 # HELP DIALOG
 # =========================================================
 
-@st.dialog("ⓘ Bantuan")
+@st.dialog("📖 Bantuan")
 def help_dialog():
 
     menu_name = st.session_state.get(
@@ -2148,18 +2307,13 @@ st.sidebar.divider()
 
 
 if st.sidebar.button(
-    "ⓘ Bantuan",
+    "📖 Bantuan Lengkap",
     use_container_width=True,
     key="sidebar_help_button",
+    help="Buka panduan lengkap untuk seluruh menu aplikasi.",
 ):
 
-    st.session_state.help_menu = menu
-
-    st.session_state.help_page = 1
-
-    st.session_state.show_help = True
-
-    st.rerun()
+    open_help("__ALL__", 1)
 
 
 st.sidebar.divider()
@@ -2195,18 +2349,12 @@ with col_title:
 with col_help:
 
     if st.button(
-        "ⓘ",
-        help="Bantuan",
+        "❓",
+        help=f"Bantuan khusus {menu}",
         key="header_help_button",
     ):
 
-        st.session_state.help_menu = menu
-
-        st.session_state.help_page = 1
-
-        st.session_state.show_help = True
-
-        st.rerun()
+        open_help(menu, 1)
 
 
 # =========================================================
@@ -2227,6 +2375,11 @@ if menu == "📊 Dashboard":
     st.markdown(
         '<div class="section-title">📊 Dashboard</div>',
         unsafe_allow_html=True,
+    )
+
+    render_context_help(
+        "📊 Dashboard",
+        "context_help_dashboard",
     )
 
     # -----------------------------------------------------
@@ -2596,6 +2749,11 @@ elif menu == "📦 Data OUT":
         unsafe_allow_html=True,
     )
 
+    render_context_help(
+        "📦 Data OUT",
+        "context_help_data_out",
+    )
+
     st.info(
         "Upload Excel dengan format: "
         "Bulan, Nama Barang, Satuan, OUT BBB, OUT BBT"
@@ -2712,6 +2870,11 @@ elif menu == "⚙️ Setting":
     st.markdown(
         '<div class="section-title">⚙️ Setting Forecast</div>',
         unsafe_allow_html=True,
+    )
+
+    render_context_help(
+        "⚙️ Setting",
+        "context_help_setting",
     )
 
     current = (
@@ -2860,7 +3023,10 @@ elif menu == "⚙️ Setting":
         "untuk mengambil seluruh bulan sebelum periode forecast. "
         "Jika mode manual digunakan dan tersedia 8 bulan histori, "
         "gunakan **Periode Histori = 8**. Forecast tetap hanya "
-        "mengambil data sebelum periode forecast."
+        "mengambil data sebelum periode forecast. Jika target lebih jauh "
+        "dari actual terakhir, forecasting dilakukan secara recursive per "
+        "bulan sampai target; actual intermediate selalu meng-override "
+        "forecast dan forecast recursive tidak masuk WAPE."
     )
 
 
@@ -2873,6 +3039,11 @@ elif menu == "✅ Validasi":
     st.markdown(
         '<div class="section-title">✅ Validasi Data</div>',
         unsafe_allow_html=True,
+    )
+
+    render_context_help(
+        "✅ Validasi",
+        "context_help_validasi",
     )
 
     df = st.session_state.data_out
@@ -3265,6 +3436,11 @@ elif menu == "🔮 Forecast":
         unsafe_allow_html=True,
     )
 
+    render_context_help(
+        "🔮 Forecast",
+        "context_help_forecast",
+    )
+
     df = st.session_state.data_out
 
     setting = (
@@ -3434,6 +3610,39 @@ elif menu == "🔮 Forecast":
             )
 
         # -------------------------------------------------
+        # RECURSIVE FORECASTING INFORMATION
+        # -------------------------------------------------
+        try:
+            recursive_status = get_recursive_forecasting_status()
+        except Exception:
+            recursive_status = {
+                "enabled": True,
+                "mode": "recursive",
+                "actual_override": True,
+                "wape_uses_recursive_forecast": False,
+            }
+
+        if recursive_status.get("enabled", False):
+            st.success(
+                "🔁 **Recursive forecasting aktif.** "
+                "Jika target lebih dari satu bulan setelah actual terakhir, "
+                "forecast dihitung bertahap sampai bulan target. "
+                "Actual intermediate selalu meng-override forecast. "
+                "Forecast recursive tidak dimasukkan ke perhitungan WAPE."
+            )
+        else:
+            st.warning(
+                "Recursive forecasting tidak aktif pada module forecasting."
+            )
+
+        st.caption(
+            "Contoh: actual terakhir Agustus dan target Oktober → "
+            "sistem menghitung September terlebih dahulu, lalu Oktober. "
+            "Jika September sudah memiliki actual, actual September digunakan "
+            "sebagai input untuk Oktober."
+        )
+
+        # -------------------------------------------------
         # VALIDATION STATUS
         # -------------------------------------------------
 
@@ -3548,6 +3757,56 @@ elif menu == "🔮 Forecast":
                     st.success(
                         "Forecast berhasil dihitung."
                     )
+
+                    # -------------------------------------------------
+                    # RECURSIVE STEP PREVIEW
+                    # -------------------------------------------------
+                    # Preview bersifat informatif dan tidak mengubah hasil utama.
+                    try:
+                        preview_item = None
+                        preview_column = None
+
+                        if not df_bbb.empty and "Nama Barang" in df_bbb.columns:
+                            preview_item = str(df_bbb.iloc[0]["Nama Barang"])
+                            preview_column = "OUT BBB"
+                        elif not df_bbt.empty and "Nama Barang" in df_bbt.columns:
+                            preview_item = str(df_bbt.iloc[0]["Nama Barang"])
+                            preview_column = "OUT BBT"
+
+                        if preview_item and preview_column:
+                            recursive_detail = explain_recursive_forecast(
+                                df=df,
+                                item_name=preview_item,
+                                value_column=preview_column,
+                                forecast_period=period_text,
+                                history_months=get_forecast_history_parameter(setting),
+                            )
+
+                            detail_df = recursive_detail.get(
+                                "details",
+                                pd.DataFrame(),
+                            )
+
+                            if not detail_df.empty:
+                                st.markdown("#### 🔁 Contoh Langkah Recursive")
+                                st.caption(
+                                    f"Contoh item: **{preview_item}** ({preview_column}). "
+                                    "Tabel menunjukkan langkah bulan demi bulan sampai target."
+                                )
+                                st.dataframe(
+                                    detail_df,
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
+                                st.caption(
+                                    "Sumber **Actual** berarti nilai aktual tersedia dan dipakai langsung. "
+                                    "Sumber **Forecast Recursive** berarti nilai dihitung terlebih dahulu "
+                                    "dan dipakai sebagai input untuk langkah berikutnya. Nilai recursive "
+                                    "ini tidak digunakan sebagai actual untuk menghitung WAPE."
+                                )
+                    except Exception:
+                        # Preview tidak boleh menggagalkan forecast utama.
+                        pass
 
                 except Exception as e:
 
@@ -3866,6 +4125,11 @@ elif menu == "🕘 History":
         unsafe_allow_html=True,
     )
 
+    render_context_help(
+        "🕘 History",
+        "context_help_history",
+    )
+
     histories = load_history()
 
     if not histories:
@@ -4146,3 +4410,61 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# =========================================================
+# DOKUMENTASI IMPLEMENTASI BANTUAN
+# =========================================================
+#
+# LEVEL 1 — BANTUAN LENGKAP SIDEBAR
+#
+# Tombol "📖 Bantuan Lengkap" membuka HELP_CONTENT["__ALL__"].
+# Halaman gabungan dibuat dari seluruh halaman HELP_CONTENT yang asli,
+# sehingga perubahan isi bantuan per-menu otomatis ikut tampil di sini.
+#
+# LEVEL 2 — BANTUAN KHUSUS MENU
+#
+# Setiap menu memiliki tombol bantuan kontekstual yang memanggil
+# render_context_help(). Tombol tersebut tidak membuka seluruh panduan,
+# melainkan langsung membuka halaman pertama dokumentasi menu aktif.
+#
+# HEADER
+#
+# Tombol ❓ di header juga bersifat kontekstual. Jika pengguna sedang
+# berada di menu Forecast, tombol tersebut membuka bantuan Forecast.
+#
+# SIDEBAR VS HEADER
+#
+# Sidebar cocok untuk pengguna yang ingin belajar aplikasi dari awal.
+# Header dan tombol di dalam menu cocok untuk pengguna yang sedang berada
+# pada satu menu dan hanya membutuhkan penjelasan bagian tersebut.
+#
+# CONTOH ALUR PENGGUNAAN
+#
+# 1. Buka Data OUT dan upload file histori.
+# 2. Gunakan tombol ❓ Bantuan Data OUT jika format kolom belum jelas.
+# 3. Buka Setting untuk memilih bulan/tahun target dan periode histori.
+# 4. Buka Validasi dan pastikan tidak ada ERROR yang menghalangi forecast.
+# 5. Buka Forecast dan jalankan perhitungan.
+# 6. Buka Dashboard untuk melihat ringkasan hasil.
+# 7. Simpan hasil ke History jika diperlukan.
+# 8. Gunakan Bantuan Lengkap dari sidebar jika ingin membaca seluruh
+#    dokumentasi dan contoh yang tersedia.
+#
+# CONTOH RECURSIVE FORECASTING
+#
+# Jika actual tersedia sampai Agustus dan target forecast adalah Oktober,
+# sistem melakukan forecast September terlebih dahulu. Nilai September
+# tersebut digunakan sebagai histori sementara untuk menghitung Oktober.
+# Jika actual September ternyata tersedia, actual September yang dipakai.
+# Forecast recursive bukan actual dan tidak dimasukkan sebagai actual pada
+# perhitungan WAPE/backtesting.
+#
+# CATATAN PEMELIHARAAN
+#
+# Jangan menghapus HELP_CONTENT hanya untuk memperpendek file. Struktur
+# bantuan lama sengaja dipertahankan karena menjadi sumber dokumentasi
+# masing-masing menu. HELP_ALL_PAGES adalah lapisan tambahan di atasnya.
+#
+# =========================================================
+# END DOCUMENTATION
+# =========================================================
