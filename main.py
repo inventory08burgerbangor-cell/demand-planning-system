@@ -2655,33 +2655,34 @@ if menu == "📊 Dashboard":
         {},
     )
 
-    # Jika summary dari engine/history belum lengkap, isi ulang dari
-    # kolom WAPE pada hasil forecast agar Dashboard tidak kosong hanya
-    # karena struktur summary berbeda antar versi modul.
+    # Summary dari forecasting.py adalah sumber kebenaran utama.
+    # Jangan mengambil rata-rata WAPE per-item karena itu dapat berbeda
+    # dari WAPE pooled hasil backtesting. Jika history lama tidak memiliki
+    # summary per-metode, gunakan total error/actual bila tersedia.
     def ensure_summary_from_dataframe(summary_obj, df_obj):
         if not isinstance(summary_obj, dict):
             summary_obj = {}
 
-        if df_obj is None or df_obj.empty:
-            return summary_obj
-
         result = dict(summary_obj)
 
         method_pairs = [
-            ("MA", "wape_ma", "accuracy_ma", "WAPE MA"),
-            ("WMA", "wape_wma", "accuracy_wma", "WAPE WMA"),
-            ("XGBoost", "wape_xgboost", "accuracy_xgboost", "WAPE XGBoost"),
+            ("MA", "wape_ma", "accuracy_ma", "total_actual_ma", "total_error_ma"),
+            ("WMA", "wape_wma", "accuracy_wma", "total_actual_wma", "total_error_wma"),
+            ("XGBoost", "wape_xgboost", "accuracy_xgboost", "total_actual_xgboost", "total_error_xgboost"),
         ]
 
-        for _, wape_key, accuracy_key, column in method_pairs:
+        for _, wape_key, accuracy_key, actual_key, error_key in method_pairs:
             value = result.get(wape_key)
 
             if value is None or (isinstance(value, float) and pd.isna(value)):
-                if column in df_obj.columns:
-                    series = pd.to_numeric(df_obj[column], errors="coerce").dropna()
-                    if not series.empty:
-                        value = float(series.mean())
+                try:
+                    total_actual = float(result.get(actual_key, 0.0) or 0.0)
+                    total_error = float(result.get(error_key, 0.0) or 0.0)
+                    if total_actual > 0.0:
+                        value = (total_error / total_actual) * 100.0
                         result[wape_key] = value
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
 
             if result.get(accuracy_key) is None or (
                 isinstance(result.get(accuracy_key), float)
@@ -2690,10 +2691,12 @@ if menu == "📊 Dashboard":
                 if value is not None:
                     try:
                         result[accuracy_key] = max(0.0, 100.0 - float(value))
-                    except Exception:
+                    except (TypeError, ValueError):
                         pass
 
-        # Legacy alias mengikuti MA, tetapi tidak digunakan untuk memilih metode.
+        # Legacy alias mengikuti MA hanya untuk kompatibilitas history lama.
+        # Alias ini tidak dipakai untuk memilih metode dan tidak ditampilkan
+        # sebagai "Best Method" di UI.
         result["wape"] = result.get("wape_ma")
         result["accuracy"] = result.get("accuracy_ma")
         result["best_method"] = None
