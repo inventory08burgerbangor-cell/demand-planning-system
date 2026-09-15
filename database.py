@@ -525,11 +525,17 @@ def save_history(
         #
         # BBB
         # BBT
-        # WAPE
-        # Accuracy
-        # Best Method
+        # WAPE MA
+        # Accuracy MA
+        # WAPE WMA
+        # Accuracy WMA
+        # WAPE XGBoost
+        # Accuracy XGBoost
         # Recursive Forecasting status
         # dan informasi forecasting lainnya.
+        #
+        # Database hanya menyimpan summary JSON.
+        # Pemilihan Best Method tidak dilakukan oleh sistem.
         # -------------------------------------------------
 
         summary_json = (

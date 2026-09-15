@@ -13,9 +13,12 @@ FORECAST_COLUMNS = [
     "Nama Barang",
     "Satuan",
     "Histori",
-    "Best Method",
-    "WAPE",
-    "Forecast",
+    "Forecast MA",
+    "WAPE MA",
+    "Forecast WMA",
+    "WAPE WMA",
+    "Forecast XGBoost",
+    "WAPE XGBoost",
 ]
 
 
@@ -23,9 +26,12 @@ EXPORT_COLUMNS = [
     "Nama Barang",
     "Satuan",
     "Jumlah Histori",
-    "Metode Terbaik",
-    "WAPE (%)",
-    "Forecast OUT",
+    "Forecast MA",
+    "WAPE MA (%)",
+    "Forecast WMA",
+    "WAPE WMA (%)",
+    "Forecast XGBoost",
+    "WAPE XGBoost (%)",
 ]
 
 
@@ -181,9 +187,12 @@ def _format_forecast_dataframe(
         "Nama Barang",
         "Satuan",
         "Histori",
-        "Best Method",
-        "WAPE",
-        "Forecast",
+        "Forecast MA",
+        "WAPE MA",
+        "Forecast WMA",
+        "WAPE WMA",
+        "Forecast XGBoost",
+        "WAPE XGBoost",
     ]
 
     result = _ordered_columns(
@@ -196,19 +205,17 @@ def _format_forecast_dataframe(
     # -----------------------------------------------------
 
     rename_map = {
-
         "Histori":
             "Jumlah Histori",
 
-        "Best Method":
-            "Metode Terbaik",
+        "WAPE MA":
+            "WAPE MA (%)",
 
-        "WAPE":
-            "WAPE (%)",
+        "WAPE WMA":
+            "WAPE WMA (%)",
 
-        "Forecast":
-            "Forecast OUT",
-
+        "WAPE XGBoost":
+            "WAPE XGBoost (%)",
     }
 
     result = result.rename(
@@ -216,40 +223,38 @@ def _format_forecast_dataframe(
     )
 
     # -----------------------------------------------------
-    # Numeric Forecast
+    # Numeric Forecast - all methods
     # -----------------------------------------------------
 
-    if (
-        "Forecast OUT"
-        in result.columns
-    ):
+    forecast_columns = [
+        "Forecast MA",
+        "Forecast WMA",
+        "Forecast XGBoost",
+    ]
 
-        result[
-            "Forecast OUT"
-        ] = _numeric_series(
-            result[
-                "Forecast OUT"
-            ],
-            decimals=2,
-        )
+    for column in forecast_columns:
+        if column in result.columns:
+            result[column] = _numeric_series(
+                result[column],
+                decimals=2,
+            )
 
     # -----------------------------------------------------
-    # Numeric WAPE
+    # Numeric WAPE - all methods
     # -----------------------------------------------------
 
-    if (
-        "WAPE (%)"
-        in result.columns
-    ):
+    wape_columns = [
+        "WAPE MA (%)",
+        "WAPE WMA (%)",
+        "WAPE XGBoost (%)",
+    ]
 
-        result[
-            "WAPE (%)"
-        ] = _numeric_series(
-            result[
-                "WAPE (%)"
-            ],
-            decimals=2,
-        )
+    for column in wape_columns:
+        if column in result.columns:
+            result[column] = _numeric_series(
+                result[column],
+                decimals=2,
+            )
 
     # -----------------------------------------------------
     # Numeric Histori
@@ -547,48 +552,46 @@ def _format_worksheet(
     }
 
     # -----------------------------------------------------
-    # WAPE
+    # WAPE - all methods
     # -----------------------------------------------------
 
-    if "WAPE (%)" in headers:
+    wape_headers = [
+        "WAPE MA (%)",
+        "WAPE WMA (%)",
+        "WAPE XGBoost (%)",
+    ]
 
-        column_number = (
-            headers[
-                "WAPE (%)"
-            ]
-        )
+    for header in wape_headers:
+        if header in headers:
+            column_number = headers[header]
 
-        for row in worksheet.iter_rows(
-            min_row=2,
-            min_col=column_number,
-            max_col=column_number,
-        ):
-
-            row[0].number_format = (
-                "0.00"
-            )
+            for row in worksheet.iter_rows(
+                min_row=2,
+                min_col=column_number,
+                max_col=column_number,
+            ):
+                row[0].number_format = "0.00"
 
     # -----------------------------------------------------
-    # Forecast
+    # Forecast - all methods
     # -----------------------------------------------------
 
-    if "Forecast OUT" in headers:
+    forecast_headers = [
+        "Forecast MA",
+        "Forecast WMA",
+        "Forecast XGBoost",
+    ]
 
-        column_number = (
-            headers[
-                "Forecast OUT"
-            ]
-        )
+    for header in forecast_headers:
+        if header in headers:
+            column_number = headers[header]
 
-        for row in worksheet.iter_rows(
-            min_row=2,
-            min_col=column_number,
-            max_col=column_number,
-        ):
-
-            row[0].number_format = (
-                "#,##0.00"
-            )
+            for row in worksheet.iter_rows(
+                min_row=2,
+                min_col=column_number,
+                max_col=column_number,
+            ):
+                row[0].number_format = "#,##0.00"
 
     # -----------------------------------------------------
     # Jumlah Histori
@@ -836,9 +839,12 @@ def export_forecast_excel(
                     "Nama Barang",
                     "Satuan",
                     "Jumlah Histori",
-                    "Metode Terbaik",
-                    "WAPE (%)",
-                    "Forecast OUT",
+                    "Forecast MA",
+                    "WAPE MA (%)",
+                    "Forecast WMA",
+                    "WAPE WMA (%)",
+                    "Forecast XGBoost",
+                    "WAPE XGBoost (%)",
                 ]
             )
 
@@ -1037,9 +1043,12 @@ if __name__ == "__main__":
                 "Nama Barang": "Contoh Barang A",
                 "Satuan": "PCS",
                 "Histori": 8,
-                "Best Method": "MA3",
-                "WAPE": 12.35,
-                "Forecast": 125.50,
+                "Forecast MA": 125.50,
+                "WAPE MA": 12.35,
+                "Forecast WMA": 128.25,
+                "WAPE WMA": 10.75,
+                "Forecast XGBoost": 126.80,
+                "WAPE XGBoost": 9.85,
             },
         ]
     )
@@ -1050,9 +1059,12 @@ if __name__ == "__main__":
                 "Nama Barang": "Contoh Barang B",
                 "Satuan": "BOX",
                 "Histori": 8,
-                "Best Method": "WMA3",
-                "WAPE": 8.75,
-                "Forecast": 98.25,
+                "Forecast MA": 97.50,
+                "WAPE MA": 10.25,
+                "Forecast WMA": 98.25,
+                "WAPE WMA": 8.75,
+                "Forecast XGBoost": 99.10,
+                "WAPE XGBoost": 8.10,
             },
         ]
     )

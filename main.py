@@ -93,6 +93,19 @@ MENU_REVERSE_MAP = {
 
 DEFAULT_SUMMARY = {
     "bbb": {
+        "wape_ma": None,
+        "wape_wma": None,
+        "wape_xgboost": None,
+        "accuracy_ma": None,
+        "accuracy_wma": None,
+        "accuracy_xgboost": None,
+        "total_actual_ma": 0.0,
+        "total_actual_wma": 0.0,
+        "total_actual_xgboost": 0.0,
+        "total_error_ma": 0.0,
+        "total_error_wma": 0.0,
+        "total_error_xgboost": 0.0,
+        # Alias legacy untuk kompatibilitas history lama.
         "wape": None,
         "accuracy": None,
         "total_actual": 0.0,
@@ -100,6 +113,18 @@ DEFAULT_SUMMARY = {
         "best_method": None,
     },
     "bbt": {
+        "wape_ma": None,
+        "wape_wma": None,
+        "wape_xgboost": None,
+        "accuracy_ma": None,
+        "accuracy_wma": None,
+        "accuracy_xgboost": None,
+        "total_actual_ma": 0.0,
+        "total_actual_wma": 0.0,
+        "total_actual_xgboost": 0.0,
+        "total_error_ma": 0.0,
+        "total_error_wma": 0.0,
+        "total_error_xgboost": 0.0,
         "wape": None,
         "accuracy": None,
         "total_actual": 0.0,
@@ -782,43 +807,53 @@ def display_forecast_table(
     df,
     limit=5,
 ):
-
+    """Menampilkan Forecast dan WAPE untuk semua metode."""
     if df is None or df.empty:
-
         st.info(
             "Belum ada hasil forecast."
         )
-
         return
 
     show = df.head(limit).copy()
 
-    if "Forecast" in show.columns:
-
-        show["Forecast"] = (
-            pd.to_numeric(
-                show["Forecast"],
-                errors="coerce",
+    for col in [
+        "Forecast MA",
+        "Forecast WMA",
+        "Forecast XGBoost",
+    ]:
+        if col in show.columns:
+            show[col] = (
+                pd.to_numeric(
+                    show[col],
+                    errors="coerce",
+                )
+                .apply(format_number)
             )
-            .apply(format_number)
-        )
 
-    if "WAPE" in show.columns:
-
-        show["WAPE"] = (
-            pd.to_numeric(
-                show["WAPE"],
-                errors="coerce",
+    for col in [
+        "WAPE MA",
+        "WAPE WMA",
+        "WAPE XGBoost",
+    ]:
+        if col in show.columns:
+            show[col] = (
+                pd.to_numeric(
+                    show[col],
+                    errors="coerce",
+                )
+                .apply(format_percent)
             )
-            .apply(format_percent)
-        )
 
     columns = [
         "Nama Barang",
         "Satuan",
-        "Forecast",
-        "Best Method",
-        "WAPE",
+        "Forecast MA",
+        "WAPE MA",
+        "Forecast WMA",
+        "WAPE WMA",
+        "Forecast XGBoost",
+        "WAPE XGBoost",
+        "Histori",
     ]
 
     columns = [
@@ -867,6 +902,13 @@ def normalize_loaded_dataframe(data):
 
     for col in [
         "Histori",
+        "WAPE MA",
+        "WAPE WMA",
+        "WAPE XGBoost",
+        "Forecast MA",
+        "Forecast WMA",
+        "Forecast XGBoost",
+        # Kolom legacy tetap dinormalisasi untuk history lama.
         "WAPE",
         "Forecast",
         "Accuracy",
@@ -1006,8 +1048,8 @@ Dashboard digunakan untuk melihat:
 
 - Performance forecast BBB
 - Performance forecast BBT
-- WAPE
-- Forecast Accuracy
+- WAPE MA, WMA, XGBoost
+- Forecast Accuracy setiap metode
 - Hasil forecast masing-masing item
 - Informasi forecast yang sedang dimuat
 - Export hasil forecast ke Excel
@@ -1172,13 +1214,19 @@ Keduanya tidak digabungkan.
             "content": """
 ### Hasil Forecast
 
-Tabel forecast menampilkan:
+Tabel forecast menampilkan hasil setiap metode secara terpisah:
 
 - Nama Barang
 - Satuan
-- Forecast
-- Best Method
-- WAPE
+- Forecast MA
+- WAPE MA
+- Forecast WMA
+- WAPE WMA
+- Forecast XGBoost
+- WAPE XGBoost
+- Histori
+
+Tidak ada kolom **Best Method** karena sistem tidak memilih satu metode terbaik.
 
 ### Export Excel
 
@@ -1525,7 +1573,7 @@ Secara sederhana prosesnya:
 
 ↓
 
-**Backtesting**
+**Backtesting per metode**
 
 ↓
 
@@ -1533,15 +1581,11 @@ Secara sederhana prosesnya:
 
 ↓
 
-**Hitung WAPE**
+**Hitung WAPE masing-masing metode**
 
 ↓
 
-**Pilih metode dengan WAPE terendah**
-
-↓
-
-**Forecast periode berikutnya**
+**Forecast masing-masing metode**
 
 ---
 
@@ -1605,7 +1649,7 @@ XGBoost adalah metode machine learning yang dapat mempelajari pola historis untu
 
 Dalam sistem ini XGBoost tidak otomatis dianggap sebagai metode terbaik.
 
-XGBoost harus dibandingkan dengan metode lain menggunakan:
+XGBoost dievaluasi secara independen menggunakan:
 
 **Backtesting**
 
@@ -1648,19 +1692,19 @@ Jika histori tersedia:
 
 **3 bulan**
 
-→ XGBoost dapat digunakan dan ikut dibandingkan dengan MA/WMA melalui backtesting.
+→ XGBoost dapat digunakan dan dievaluasi secara independen melalui backtesting.
 
 Jika histori tersedia:
 
 **6 bulan**
 
-→ XGBoost dapat digunakan dan ikut dibandingkan dengan MA/WMA melalui backtesting.
+→ XGBoost dapat digunakan dan dievaluasi secara independen melalui backtesting.
 
 Jika histori tersedia:
 
 **{XGBOOST_MIN_HISTORY} bulan atau lebih**
 
-→ XGBoost dapat ikut dibandingkan dengan metode lainnya, selama package XGBoost tersedia.
+→ XGBoost dapat digunakan dan dievaluasi secara independen, selama package XGBoost tersedia.
 
 ---
 
@@ -1693,58 +1737,49 @@ Sistem akan tetap menggunakan metode forecasting yang tersedia.
         },
 
         {
-            "title": "Forecast — Auto Best Method",
+            "title": "Forecast — Tiga Metode Secara Independen",
             "content": """
-### Auto Best Method
+### Tiga Metode Forecast
 
-Sistem tidak meminta user memilih metode secara manual.
+Sistem menghitung tiga metode secara **independen**:
 
-Sistem melakukan:
+1. **MA**
+2. **WMA**
+3. **XGBoost** (jika tersedia dan memenuhi syarat histori)
 
-1. Menentukan kandidat metode berdasarkan jumlah histori.
-2. Menjalankan backtesting.
-3. Menghasilkan forecast backtest.
-4. Membandingkan dengan actual.
-5. Menghitung WAPE.
-6. Membandingkan WAPE setiap metode.
-7. Memilih metode dengan WAPE terendah.
-8. Menggunakan metode tersebut untuk forecast periode berikutnya.
+Setiap metode menghasilkan:
 
----
+- Forecast sendiri
+- WAPE sendiri
+- Forecast Accuracy sendiri
 
-### Contoh
+### Tidak Ada Best Method
 
-Untuk Burger Bun:
+Sistem **tidak memilih satu metode terbaik** dan tidak membuat kolom Best Method.
 
-| Metode | WAPE |
-|---|---:|
-| MA 2 | 12% |
-| WMA 2 | 9% |
-| XGBoost | 7% |
+Contoh:
 
-Maka:
+| Metode | Forecast | WAPE |
+|---|---:|---:|
+| MA | 150 | 12% |
+| WMA | 155 | 9% |
+| XGBoost | 153 | 7% |
 
-**Best Method = XGBoost**
+Ketiga hasil tetap ditampilkan agar user dapat membandingkan performa masing-masing metode.
 
-Karena WAPE XGBoost paling rendah.
+### Recursive Forecast
 
----
+Jika target lebih jauh dari actual terakhir, proses recursive dilakukan **secara terpisah untuk setiap metode**.
 
-### Item Berbeda Bisa Berbeda Metode
+Contoh actual sampai Agustus dan target Oktober:
 
-Contohnya:
+- MA: forecast September → forecast Oktober
+- WMA: forecast September → forecast Oktober
+- XGBoost: forecast September → forecast Oktober, jika tersedia
 
-**Burger Bun → WMA 2**
+Actual intermediate selalu meng-override forecast recursive.
 
-sedangkan:
-
-**Chicken Patty → MA 3**
-
-atau:
-
-**Item lain → XGBoost**
-
-Jadi sistem tidak memaksakan satu metode untuk seluruh item.
+Forecast recursive tidak digunakan sebagai actual untuk menghitung WAPE.
             """,
         },
 
@@ -1753,9 +1788,11 @@ Jadi sistem tidak memaksakan satu metode untuk seluruh item.
             "content": """
 ### WAPE Berasal dari Backtesting
 
-WAPE yang digunakan untuk memilih Best Method berasal dari hasil pengujian metode terhadap histori.
+WAPE setiap metode berasal dari hasil pengujian metode tersebut terhadap histori actual.
 
 Sistem tidak menghitung WAPE dari forecast masa depan.
+
+MA memiliki WAPE sendiri, WMA memiliki WAPE sendiri, dan XGBoost memiliki WAPE sendiri jika tersedia.
 
 Alurnya:
 
@@ -1815,11 +1852,9 @@ Metode tersebut menghasilkan error agregat sebesar:
 
 **10% terhadap total actual pada data backtesting.**
 
-Kemudian metode lain juga diuji.
+Kemudian metode lain juga diuji secara independen.
 
-Metode dengan WAPE paling rendah dipilih sebagai:
-
-**Best Method**
+Hasil WAPE setiap metode tetap ditampilkan dan tidak digunakan untuk memilih satu Best Method.
             """,
         },
 
@@ -1904,19 +1939,15 @@ Untuk bulan forecast yang belum terjadi, actual belum tersedia sehingga error ak
             "content": """
 ### Recursive Forecasting
 
-Sistem menggunakan **recursive forecasting** jika periode target lebih jauh dari actual terakhir yang tersedia. Artinya forecast tidak langsung melompat ke bulan target, tetapi dihitung **bulan demi bulan**.
+Sistem menggunakan **recursive forecasting** jika periode target lebih jauh dari actual terakhir yang tersedia. Forecast dihitung **bulan demi bulan** dan dilakukan secara terpisah untuk MA, WMA, dan XGBoost.
 
 ### Contoh: Actual sampai Agustus, Target Oktober
 
-Misalnya actual tersedia Januari sampai Agustus dan user memilih **Forecast = Oktober**. Sistem akan:
+Jika actual tersedia Januari sampai Agustus dan target adalah Oktober:
 
-1. Menggunakan actual Januari–Agustus sebagai histori awal.
-2. Melakukan backtesting MA / WMA / XGBoost.
-3. Menghitung WAPE setiap metode.
-4. Memilih **Best Method** dengan WAPE terendah.
-5. Menghitung forecast September.
-6. Memasukkan forecast September sebagai input sementara.
-7. Menghitung forecast Oktober.
+- **MA:** forecast September → forecast Oktober
+- **WMA:** forecast September → forecast Oktober
+- **XGBoost:** forecast September → forecast Oktober, jika tersedia
 
 Jadi sistem tidak melompati September.
 
@@ -1924,13 +1955,13 @@ Jadi sistem tidak melompati September.
 
 ### Jika Actual Intermediate Sudah Tersedia
 
-Sistem **tidak mengganti actual dengan forecast**. Contoh: actual tersedia sampai Agustus, September ternyata sudah memiliki actual, dan target adalah Oktober. Maka yang digunakan adalah:
+Actual selalu lebih diprioritaskan daripada forecast sementara.
+
+Contoh:
 
 **Januari–Agustus Actual + September Actual → Forecast Oktober**
 
-Prinsipnya:
-
-> **Actual selalu meng-override forecast intermediate.**
+Jika September sudah memiliki actual, sistem menggunakan actual September.
 
 ---
 
@@ -1940,43 +1971,36 @@ Jika actual terakhir Agustus dan target November:
 
 **Forecast September → Forecast Oktober → Forecast November**
 
-Namun bila actual Oktober tersedia, prosesnya menjadi:
+Namun bila actual Oktober tersedia:
 
 **Forecast September → Actual Oktober → Forecast November**
 
-Dengan begitu data aktual terbaru selalu diprioritaskan.
+Mekanisme ini diterapkan secara independen untuk setiap metode.
 
 ---
 
 ### Apakah Forecast Recursive Masuk ke WAPE?
 
-**Tidak.** WAPE tetap dihitung dari **backtesting terhadap actual historis**. Forecast September atau Oktober yang dibuat hanya untuk mencapai target masa depan tidak dianggap sebagai actual dan tidak dimasukkan sebagai pasangan error WAPE.
+**Tidak.**
+
+WAPE setiap metode tetap dihitung dari **backtesting terhadap actual historis**.
 
 Jadi:
 
-- **WAPE** = ukuran performa metode berdasarkan histori actual.
-- **Recursive Forecast** = mekanisme untuk mencapai bulan target secara bertahap.
-
----
-
-### Pengaruh Periode Histori
-
-Jika mode manual menggunakan **3 bulan histori**, setiap langkah recursive memakai maksimal 3 nilai terakhir yang tersedia pada saat langkah tersebut.
-
-Jika menggunakan **8 bulan histori**, setiap langkah memakai maksimal 8 nilai terakhir.
-
-Jika **Gunakan semua histori tersedia** aktif, seluruh histori sebelum target digunakan sesuai aturan module forecasting.
+- **WAPE MA** = performa MA pada backtesting histori.
+- **WAPE WMA** = performa WMA pada backtesting histori.
+- **WAPE XGBoost** = performa XGBoost pada backtesting histori jika tersedia.
+- Forecast recursive hanya digunakan untuk mencapai target masa depan.
 
 ---
 
 ### Ringkasan
 
-1. **Best Method dipilih dari actual histori.**
-2. **Target jauh dihitung bertahap per bulan.**
-3. **Actual intermediate selalu lebih diprioritaskan.**
-4. **Forecast recursive tidak digunakan untuk menghitung WAPE.**
-
-Dengan mekanisme ini, forecast Oktober atau November tetap dapat dibuat walaupun actual terbaru baru tersedia sampai Agustus, selama histori awal memenuhi syarat forecasting.
+1. **MA, WMA, dan XGBoost dihitung secara terpisah.**
+2. **Tidak ada Best Method.**
+3. **Target jauh dihitung bertahap per bulan.**
+4. **Actual intermediate selalu lebih diprioritaskan.**
+5. **Forecast recursive tidak digunakan sebagai actual untuk WAPE.**
             """,
         },
     ],
@@ -2523,97 +2547,60 @@ if menu == "📊 Dashboard":
         {},
     )
 
-    col_bbb, col_bbt = st.columns(2)
-
-    with col_bbb:
-
+    def render_method_performance(
+        stream_label,
+        stream_summary,
+    ):
         st.markdown(
-            '<div class="stream-title">PERSENTASE BBB</div>',
+            f'<div class="stream-title">{stream_label}</div>',
             unsafe_allow_html=True,
         )
 
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
 
-        with c1:
+        methods = [
+            ("MA", "wape_ma", "accuracy_ma"),
+            ("WMA", "wape_wma", "accuracy_wma"),
+            ("XGBoost", "wape_xgboost", "accuracy_xgboost"),
+        ]
 
-            st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="metric-label">
-                        WAPE
+        for col, (method_name, wape_key, accuracy_key) in zip(
+            [c1, c2, c3],
+            methods,
+        ):
+            with col:
+                st.markdown(
+                    f"""
+                    <div class="metric-card">
+                        <div class="metric-label">
+                            WAPE {method_name}
+                        </div>
+                        <div class="metric-value">
+                            {format_percent(
+                                stream_summary.get(wape_key)
+                            )}
+                        </div>
                     </div>
-                    <div class="metric-value">
-                        {format_percent(
-                            summary_bbb.get("wape")
-                        )}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-        with c2:
+                st.caption(
+                    f"Accuracy {method_name}: "
+                    f"{format_percent(
+                        stream_summary.get(accuracy_key)
+                    )}"
+                )
 
-            st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="metric-label">
-                        FORECAST ACCURACY
-                    </div>
-                    <div class="metric-value">
-                        {format_percent(
-                            summary_bbb.get("accuracy")
-                        )}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    render_method_performance(
+        "PERSENTASE BBB",
+        summary_bbb,
+    )
 
-    with col_bbt:
-
-        st.markdown(
-            '<div class="stream-title">PERSENTASE BBT</div>',
-            unsafe_allow_html=True,
-        )
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-
-            st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="metric-label">
-                        WAPE
-                    </div>
-                    <div class="metric-value">
-                        {format_percent(
-                            summary_bbt.get("wape")
-                        )}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        with c2:
-
-            st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="metric-label">
-                        FORECAST ACCURACY
-                    </div>
-                    <div class="metric-value">
-                        {format_percent(
-                            summary_bbt.get("accuracy")
-                        )}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    render_method_performance(
+        "PERSENTASE BBT",
+        summary_bbt,
+    )
 
     st.divider()
 
@@ -3624,8 +3611,8 @@ elif menu == "🔮 Forecast":
                 f"Histori tersedia {history_count} bulan "
                 f"dan sudah memenuhi minimum "
                 f"{XGBOOST_MIN_HISTORY} bulan. "
-                "XGBoost dapat ikut dibandingkan dengan "
-                "MA/WMA melalui backtesting."
+                "XGBoost dihitung dan dievaluasi secara independen "
+                "bersama MA/WMA melalui backtesting."
             )
 
         # -------------------------------------------------
@@ -3810,7 +3797,8 @@ elif menu == "🔮 Forecast":
                                 st.markdown("#### 🔁 Contoh Langkah Recursive")
                                 st.caption(
                                     f"Contoh item: **{preview_item}** ({preview_column}). "
-                                    "Tabel menunjukkan langkah bulan demi bulan sampai target."
+                                    "Tabel menunjukkan langkah bulan demi bulan sampai target. "
+                                    "Setiap metode diproses secara independen."
                                 )
                                 st.dataframe(
                                     detail_df,
@@ -3876,40 +3864,40 @@ elif menu == "🔮 Forecast":
         )
 
         with tab1:
-
             if df_bbb.empty:
-
                 st.info(
                     "Tidak ada hasil forecast BBB."
                 )
-
             else:
-
                 display_df = df_bbb.copy()
 
-                if "WAPE" in display_df.columns:
+                for col in [
+                    "Forecast MA",
+                    "Forecast WMA",
+                    "Forecast XGBoost",
+                ]:
+                    if col in display_df.columns:
+                        display_df[col] = (
+                            pd.to_numeric(
+                                display_df[col],
+                                errors="coerce",
+                            )
+                            .apply(format_number)
+                        )
 
-                    display_df["WAPE"] = (
-                        pd.to_numeric(
-                            display_df["WAPE"],
-                            errors="coerce",
+                for col in [
+                    "WAPE MA",
+                    "WAPE WMA",
+                    "WAPE XGBoost",
+                ]:
+                    if col in display_df.columns:
+                        display_df[col] = (
+                            pd.to_numeric(
+                                display_df[col],
+                                errors="coerce",
+                            )
+                            .apply(format_percent)
                         )
-                        .apply(
-                            format_percent
-                        )
-                    )
-
-                if "Forecast" in display_df.columns:
-
-                    display_df["Forecast"] = (
-                        pd.to_numeric(
-                            display_df["Forecast"],
-                            errors="coerce",
-                        )
-                        .apply(
-                            format_number
-                        )
-                    )
 
                 st.dataframe(
                     display_df,
@@ -3918,41 +3906,40 @@ elif menu == "🔮 Forecast":
                 )
 
         with tab2:
-
             if df_bbt.empty:
-
                 st.info(
                     "Tidak ada hasil forecast BBT."
                 )
-
             else:
-
                 display_df = df_bbt.copy()
 
-                if "WAPE" in display_df.columns:
-
-                    display_df["WAPE"] = (
-                        pd.to_numeric(
-                            display_df["WAPE"],
-                            errors="coerce",
-                        )
-                        .apply(
-                            format_percent
-                        )
-                    )
-
-                if "Forecast" in display_df.columns:
-
-                    display_df["Forecast"] = (
-                        pd.to_numeric(
-                            display_df["Forecast"],
-                            errors="coerce",
-                        )
-                        .apply(
-                            format_number
+                for col in [
+                    "Forecast MA",
+                    "Forecast WMA",
+                    "Forecast XGBoost",
+                ]:
+                    if col in display_df.columns:
+                        display_df[col] = (
+                            pd.to_numeric(
+                                display_df[col],
+                                errors="coerce",
+                            )
+                            .apply(format_number)
                         )
 
-                    )
+                for col in [
+                    "WAPE MA",
+                    "WAPE WMA",
+                    "WAPE XGBoost",
+                ]:
+                    if col in display_df.columns:
+                        display_df[col] = (
+                            pd.to_numeric(
+                                display_df[col],
+                                errors="coerce",
+                            )
+                            .apply(format_percent)
+                        )
 
                 st.dataframe(
                     display_df,
@@ -3961,7 +3948,7 @@ elif menu == "🔮 Forecast":
                 )
 
         # -------------------------------------------------
-        # BEST METHOD SUMMARY
+        # METHOD PERFORMANCE SUMMARY
         # -------------------------------------------------
 
         summary = (
@@ -3981,46 +3968,67 @@ elif menu == "🔮 Forecast":
         st.divider()
 
         st.markdown(
-            "### Metode Terbaik"
+            "### Performance per Metode"
         )
 
-        c1, c2 = st.columns(2)
+        st.caption(
+            "Setiap metode memiliki Forecast dan WAPE sendiri. "
+            "Tidak ada pemilihan Best Method."
+        )
 
-        with c1:
+        performance_df = pd.DataFrame(
+            [
+                {
+                    "Stream": "BBB",
+                    "Metode": "MA",
+                    "WAPE": summary_bbb.get("wape_ma"),
+                    "Forecast Accuracy": summary_bbb.get("accuracy_ma"),
+                },
+                {
+                    "Stream": "BBB",
+                    "Metode": "WMA",
+                    "WAPE": summary_bbb.get("wape_wma"),
+                    "Forecast Accuracy": summary_bbb.get("accuracy_wma"),
+                },
+                {
+                    "Stream": "BBB",
+                    "Metode": "XGBoost",
+                    "WAPE": summary_bbb.get("wape_xgboost"),
+                    "Forecast Accuracy": summary_bbb.get("accuracy_xgboost"),
+                },
+                {
+                    "Stream": "BBT",
+                    "Metode": "MA",
+                    "WAPE": summary_bbt.get("wape_ma"),
+                    "Forecast Accuracy": summary_bbt.get("accuracy_ma"),
+                },
+                {
+                    "Stream": "BBT",
+                    "Metode": "WMA",
+                    "WAPE": summary_bbt.get("wape_wma"),
+                    "Forecast Accuracy": summary_bbt.get("accuracy_wma"),
+                },
+                {
+                    "Stream": "BBT",
+                    "Metode": "XGBoost",
+                    "WAPE": summary_bbt.get("wape_xgboost"),
+                    "Forecast Accuracy": summary_bbt.get("accuracy_xgboost"),
+                },
+            ]
+        )
 
-            method_bbb = summary_bbb.get(
-                "best_method"
-            )
+        performance_df["WAPE"] = performance_df["WAPE"].apply(
+            format_percent
+        )
+        performance_df["Forecast Accuracy"] = performance_df[
+            "Forecast Accuracy"
+        ].apply(format_percent)
 
-            if method_bbb:
-
-                st.success(
-                    f"**BBB:** {method_bbb}"
-                )
-
-            else:
-
-                st.info(
-                    "Metode terbaik BBB belum tersedia."
-                )
-
-        with c2:
-
-            method_bbt = summary_bbt.get(
-                "best_method"
-            )
-
-            if method_bbt:
-
-                st.success(
-                    f"**BBT:** {method_bbt}"
-                )
-
-            else:
-
-                st.info(
-                    "Metode terbaik BBT belum tersedia."
-                )
+        st.dataframe(
+            performance_df,
+            use_container_width=True,
+            hide_index=True,
+        )
 
         # -------------------------------------------------
         # SAVE FORECAST
@@ -4463,8 +4471,8 @@ st.markdown(
 # 2. Gunakan tombol ❓ Bantuan Data OUT jika format kolom belum jelas.
 # 3. Buka Setting untuk memilih bulan/tahun target dan periode histori.
 # 4. Buka Validasi dan pastikan tidak ada ERROR yang menghalangi forecast.
-# 5. Buka Forecast dan jalankan perhitungan.
-# 6. Buka Dashboard untuk melihat ringkasan hasil.
+# 5. Buka Forecast dan jalankan perhitungan MA, WMA, dan XGBoost secara terpisah.
+# 6. Buka Dashboard untuk melihat WAPE dan Accuracy setiap metode.
 # 7. Simpan hasil ke History jika diperlukan.
 # 8. Gunakan Bantuan Lengkap dari sidebar jika ingin membaca seluruh
 #    dokumentasi dan contoh yang tersedia.
@@ -4472,11 +4480,11 @@ st.markdown(
 # CONTOH RECURSIVE FORECASTING
 #
 # Jika actual tersedia sampai Agustus dan target forecast adalah Oktober,
-# sistem melakukan forecast September terlebih dahulu. Nilai September
-# tersebut digunakan sebagai histori sementara untuk menghitung Oktober.
-# Jika actual September ternyata tersedia, actual September yang dipakai.
+# setiap metode melakukan forecast September terlebih dahulu, lalu memakai
+# September sebagai histori sementara untuk menghitung Oktober.
+# Jika actual September tersedia, actual September yang dipakai.
 # Forecast recursive bukan actual dan tidak dimasukkan sebagai actual pada
-# perhitungan WAPE/backtesting.
+# perhitungan WAPE/backtesting. Tidak ada Best Method.
 #
 # CATATAN PEMELIHARAAN
 #
