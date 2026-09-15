@@ -1,0 +1,3955 @@
+import streamlit as st
+import pandas as pd
+
+from forecasting import (
+    run_forecasting,
+    parse_period,
+    XGBOOST_AVAILABLE,
+    XGBOOST_MIN_HISTORY,
+)
+
+from database import (
+    init_db,
+    save_history,
+    load_history,
+    load_history_by_id,
+    delete_history,
+    delete_all_history,
+)
+
+from export import (
+    export_forecast_excel,
+    generate_export_filename,
+)
+
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+st.set_page_config(
+    page_title="Demand Planning System",
+    page_icon="🍔",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+# =========================================================
+# DATABASE
+# =========================================================
+
+init_db()
+
+
+# =========================================================
+# CONSTANT
+# =========================================================
+
+BULAN = {
+    1: "Januari",
+    2: "Februari",
+    3: "Maret",
+    4: "April",
+    5: "Mei",
+    6: "Juni",
+    7: "Juli",
+    8: "Agustus",
+    9: "September",
+    10: "Oktober",
+    11: "November",
+    12: "Desember",
+}
+
+MENU_OPTIONS = [
+    "📊 Dashboard",
+    "📦 Data OUT",
+    "⚙️ Setting",
+    "✅ Validasi",
+    "🔮 Forecast",
+    "🕘 History",
+]
+
+MENU_QUERY_MAP = {
+    "dashboard": "📊 Dashboard",
+    "data-out": "📦 Data OUT",
+    "setting": "⚙️ Setting",
+    "validasi": "✅ Validasi",
+    "forecast": "🔮 Forecast",
+    "history": "🕘 History",
+}
+
+MENU_REVERSE_MAP = {
+    value: key
+    for key, value in MENU_QUERY_MAP.items()
+}
+
+
+# =========================================================
+# DEFAULT SUMMARY
+# =========================================================
+
+DEFAULT_SUMMARY = {
+    "bbb": {
+        "wape": None,
+        "accuracy": None,
+        "total_actual": 0.0,
+        "total_error": 0.0,
+        "best_method": None,
+    },
+    "bbt": {
+        "wape": None,
+        "accuracy": None,
+        "total_actual": 0.0,
+        "total_error": 0.0,
+        "best_method": None,
+    },
+}
+
+
+# =========================================================
+# SESSION STATE
+# =========================================================
+
+def reset_forecast_session():
+
+    st.session_state.forecast_bbb = pd.DataFrame()
+
+    st.session_state.forecast_bbt = pd.DataFrame()
+
+    st.session_state.forecast_summary = {
+        "bbb": DEFAULT_SUMMARY["bbb"].copy(),
+        "bbt": DEFAULT_SUMMARY["bbt"].copy(),
+    }
+
+    st.session_state.forecast_loaded = False
+
+    st.session_state.loaded_history_id = None
+
+    st.session_state.loaded_forecast_info = None
+
+    st.session_state.last_forecast_period = None
+
+    st.session_state.last_forecast_history_months = None
+
+
+if "forecast_setting" not in st.session_state:
+
+    st.session_state.forecast_setting = {
+        "month": 9,
+        "year": 2026,
+        "history_months": 3,
+    }
+
+
+if "data_out" not in st.session_state:
+
+    st.session_state.data_out = pd.DataFrame()
+
+
+if "data_valid" not in st.session_state:
+
+    st.session_state.data_valid = False
+
+
+if "forecast_bbb" not in st.session_state:
+
+    st.session_state.forecast_bbb = pd.DataFrame()
+
+
+if "forecast_bbt" not in st.session_state:
+
+    st.session_state.forecast_bbt = pd.DataFrame()
+
+
+if "forecast_summary" not in st.session_state:
+
+    st.session_state.forecast_summary = {
+        "bbb": DEFAULT_SUMMARY["bbb"].copy(),
+        "bbt": DEFAULT_SUMMARY["bbt"].copy(),
+    }
+
+
+if "forecast_loaded" not in st.session_state:
+
+    st.session_state.forecast_loaded = False
+
+
+if "loaded_history_id" not in st.session_state:
+
+    st.session_state.loaded_history_id = None
+
+
+if "loaded_forecast_info" not in st.session_state:
+
+    st.session_state.loaded_forecast_info = None
+
+
+if "show_help" not in st.session_state:
+
+    st.session_state.show_help = False
+
+
+if "help_menu" not in st.session_state:
+
+    st.session_state.help_menu = "📊 Dashboard"
+
+
+if "help_page" not in st.session_state:
+
+    st.session_state.help_page = 1
+
+
+if "confirm_delete_history" not in st.session_state:
+
+    st.session_state.confirm_delete_history = None
+
+
+if "confirm_delete_all" not in st.session_state:
+
+    st.session_state.confirm_delete_all = False
+
+
+# =========================================================
+# STYLE
+# =========================================================
+
+st.markdown(
+    """
+    <style>
+
+    /* =====================================================
+       GLOBAL
+       ===================================================== */
+
+    .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+    }
+
+
+    /* =====================================================
+       HEADER
+       ===================================================== */
+
+    .main-title {
+        font-size: 30px;
+        font-weight: 800;
+        margin-bottom: 0px;
+        animation: titleFade 0.45s ease-out;
+    }
+
+    .sub-title {
+        color: #777;
+        font-size: 14px;
+        margin-top: 0px;
+        margin-bottom: 20px;
+        animation: subtitleFade 0.55s ease-out;
+    }
+
+
+    /* =====================================================
+       SECTION
+       ===================================================== */
+
+    .section-title {
+        font-size: 21px;
+        font-weight: 700;
+        margin-top: 10px;
+        margin-bottom: 12px;
+    }
+
+
+    /* =====================================================
+       METRIC
+       ===================================================== */
+
+    .metric-card {
+        padding: 18px;
+        border-radius: 14px;
+        border: 1px solid rgba(128,128,128,0.25);
+        background: rgba(128,128,128,0.05);
+        margin-bottom: 10px;
+        transition:
+            transform 0.25s ease,
+            box-shadow 0.25s ease;
+    }
+
+    .metric-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.08);
+    }
+
+    .metric-label {
+        font-size: 13px;
+        font-weight: 700;
+        opacity: 0.7;
+    }
+
+    .metric-value {
+        font-size: 26px;
+        font-weight: 800;
+        margin-top: 4px;
+    }
+
+
+    /* =====================================================
+       STREAM
+       ===================================================== */
+
+    .stream-title {
+        font-size: 18px;
+        font-weight: 800;
+        margin-bottom: 8px;
+    }
+
+
+    /* =====================================================
+       LOADED BOX
+       ===================================================== */
+
+    .loaded-box {
+        padding: 14px 18px;
+        border-radius: 12px;
+        border: 1px solid rgba(0,128,0,0.25);
+        background: rgba(0,128,0,0.06);
+        margin-bottom: 18px;
+        animation: contentSlideIn 0.45s ease-out;
+    }
+
+
+    /* =====================================================
+       XGBOOST INFO
+       ===================================================== */
+
+    .method-box {
+        padding: 14px 18px;
+        border-radius: 12px;
+        border: 1px solid rgba(128,128,128,0.25);
+        background: rgba(128,128,128,0.05);
+        margin: 10px 0 15px 0;
+    }
+
+
+    /* =====================================================
+       HELP PAGE
+       ===================================================== */
+
+    .help-page-indicator {
+        text-align: center;
+        font-size: 12px;
+        color: #777;
+        margin-top: 5px;
+        margin-bottom: 10px;
+    }
+
+    .help-page-title {
+        font-size: 20px;
+        font-weight: 800;
+        margin-bottom: 12px;
+    }
+
+
+    /* =====================================================
+       FOOTER
+       ===================================================== */
+
+    .footer {
+        text-align: center;
+        color: #888;
+        font-size: 12px;
+        margin-top: 50px;
+        padding-top: 15px;
+        border-top: 1px solid rgba(128,128,128,0.2);
+    }
+
+
+    /* =====================================================
+       HELP DIALOG
+       ===================================================== */
+
+    div[data-testid="stDialog"] {
+        animation: helpModalIn 0.30s ease-out;
+    }
+
+    @keyframes helpModalIn {
+        from {
+            opacity: 0;
+            transform: translateY(-18px) scale(0.97);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+    }
+
+    div[data-testid="stDialog"] > div {
+        border-radius: 18px;
+    }
+
+    .help-dialog-content {
+        animation: helpContentFade 0.45s ease-out;
+    }
+
+    @keyframes helpContentFade {
+        from {
+            opacity: 0;
+            transform: translateY(8px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+
+    /* =====================================================
+       SIDEBAR
+       ===================================================== */
+
+    section[data-testid="stSidebar"] {
+        animation: sidebarSlide 0.35s ease-out;
+    }
+
+    @keyframes sidebarSlide {
+        from {
+            opacity: 0;
+            transform: translateX(-15px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateX(0);
+        }
+    }
+
+
+    /* =====================================================
+       SIDEBAR MENU ANIMATION
+       ===================================================== */
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] {
+        gap: 6px;
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] label {
+        border-radius: 10px;
+        padding: 5px 8px;
+        transition:
+            transform 0.20s ease,
+            background 0.20s ease,
+            box-shadow 0.20s ease;
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
+        transform: translateX(5px);
+        background: rgba(128,128,128,0.10);
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {
+        background: rgba(128,128,128,0.16);
+        box-shadow:
+            inset 3px 0 0 currentColor;
+        transform: translateX(4px);
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) p {
+        font-weight: 800;
+    }
+
+
+    /* =====================================================
+       BUTTON ANIMATION
+       ===================================================== */
+
+    .stButton > button {
+        transition:
+            transform 0.18s ease,
+            box-shadow 0.18s ease;
+    }
+
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 14px rgba(0,0,0,0.10);
+    }
+
+    .stButton > button:active {
+        transform: scale(0.97);
+    }
+
+
+    /* =====================================================
+       PAGE CONTENT ANIMATION
+       ===================================================== */
+
+    [data-testid="stAppViewContainer"] .main .block-container {
+        animation: pageFadeSlide 0.38s ease-out;
+    }
+
+    @keyframes pageFadeSlide {
+        from {
+            opacity: 0;
+            transform: translateY(8px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    @keyframes titleFade {
+        from {
+            opacity: 0;
+            transform: translateX(-8px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateX(0);
+        }
+    }
+
+    @keyframes subtitleFade {
+        from {
+            opacity: 0;
+            transform: translateX(-5px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateX(0);
+        }
+    }
+
+    @keyframes contentSlideIn {
+        from {
+            opacity: 0;
+            transform: translateY(10px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# =========================================================
+# FORMAT NUMBER
+# =========================================================
+
+def format_number(value):
+
+    if value is None:
+        return "-"
+
+    try:
+
+        if pd.isna(value):
+            return "-"
+
+    except Exception:
+
+        return "-"
+
+    try:
+
+        value = float(value)
+
+    except Exception:
+
+        return "-"
+
+    text = f"{value:,.2f}"
+
+    text = text.replace(",", "TEMP")
+    text = text.replace(".", ",")
+    text = text.replace("TEMP", ".")
+
+    return text
+
+
+def format_percent(value):
+
+    if value is None:
+        return "-"
+
+    try:
+
+        if pd.isna(value):
+            return "-"
+
+    except Exception:
+
+        return "-"
+
+    try:
+
+        value = float(value)
+
+    except Exception:
+
+        return "-"
+
+    return (
+        f"{value:.2f}"
+        .replace(".", ",")
+        + "%"
+    )
+
+
+# =========================================================
+# PERIOD
+# =========================================================
+
+def forecast_period_text():
+
+    month = st.session_state.forecast_setting["month"]
+
+    year = st.session_state.forecast_setting["year"]
+
+    return f"{BULAN[month]} {year}"
+
+
+def get_forecast_date():
+
+    return pd.Timestamp(
+        year=st.session_state.forecast_setting["year"],
+        month=st.session_state.forecast_setting["month"],
+        day=1,
+    )
+
+
+# =========================================================
+# HISTORY DETECTION
+# =========================================================
+
+def get_available_history(df):
+
+    if df is None or df.empty:
+        return []
+
+    if "Bulan" not in df.columns:
+        return []
+
+    forecast_date = get_forecast_date()
+
+    temp = df.copy()
+
+    temp["_periode"] = temp["Bulan"].apply(
+        lambda x: parse_period(
+            x,
+            default_year=forecast_date.year,
+        )
+    )
+
+    temp = temp[
+        temp["_periode"].notna()
+    ].copy()
+
+    temp = temp[
+        temp["_periode"] < forecast_date
+    ].copy()
+
+    if temp.empty:
+        return []
+
+    months = (
+        temp["_periode"]
+        .drop_duplicates()
+        .sort_values()
+        .tolist()
+    )
+
+    return months
+
+
+# =========================================================
+# CHECK FORECAST STATUS
+# =========================================================
+
+def forecast_matches_current_setting():
+
+    if not st.session_state.forecast_loaded:
+        return False
+
+    current_period = forecast_period_text()
+
+    current_history = int(
+        st.session_state.forecast_setting[
+            "history_months"
+        ]
+    )
+
+    last_period = (
+        st.session_state.last_forecast_period
+    )
+
+    last_history = (
+        st.session_state.last_forecast_history_months
+    )
+
+    return (
+        current_period == last_period
+        and current_history == last_history
+    )
+
+
+# =========================================================
+# DISPLAY FORECAST TABLE
+# =========================================================
+
+def display_forecast_table(
+    df,
+    limit=5,
+):
+
+    if df is None or df.empty:
+
+        st.info(
+            "Belum ada hasil forecast."
+        )
+
+        return
+
+    show = df.head(limit).copy()
+
+    if "Forecast" in show.columns:
+
+        show["Forecast"] = (
+            pd.to_numeric(
+                show["Forecast"],
+                errors="coerce",
+            )
+            .apply(format_number)
+        )
+
+    if "WAPE" in show.columns:
+
+        show["WAPE"] = (
+            pd.to_numeric(
+                show["WAPE"],
+                errors="coerce",
+            )
+            .apply(format_percent)
+        )
+
+    columns = [
+        "Nama Barang",
+        "Satuan",
+        "Forecast",
+        "Best Method",
+        "WAPE",
+    ]
+
+    columns = [
+        col
+        for col in columns
+        if col in show.columns
+    ]
+
+    show = show[columns]
+
+    st.dataframe(
+        show,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# =========================================================
+# NORMALIZE LOADED DATA
+# =========================================================
+
+def normalize_loaded_dataframe(data):
+
+    if data is None:
+        return pd.DataFrame()
+
+    if isinstance(data, pd.DataFrame):
+
+        df = data.copy()
+
+    elif isinstance(data, list):
+
+        df = pd.DataFrame(data)
+
+    else:
+
+        return pd.DataFrame()
+
+    if df.empty:
+        return pd.DataFrame()
+
+    df.columns = [
+        str(col).strip()
+        for col in df.columns
+    ]
+
+    for col in [
+        "Histori",
+        "WAPE",
+        "Forecast",
+        "Accuracy",
+    ]:
+
+        if col in df.columns:
+
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce",
+            )
+
+    return df
+
+
+# =========================================================
+# LOAD FORECAST INTO SESSION
+# =========================================================
+
+def load_forecast_to_session(history_id):
+
+    record = load_history_by_id(
+        history_id
+    )
+
+    if record is None:
+
+        return False, "Data history tidak ditemukan."
+
+    df_bbb = normalize_loaded_dataframe(
+        record.get("forecast_bbb")
+    )
+
+    df_bbt = normalize_loaded_dataframe(
+        record.get("forecast_bbt")
+    )
+
+    summary = record.get(
+        "summary",
+        {},
+    )
+
+    if not isinstance(summary, dict):
+
+        summary = {}
+
+    if "bbb" not in summary:
+
+        summary["bbb"] = (
+            DEFAULT_SUMMARY["bbb"].copy()
+        )
+
+    if "bbt" not in summary:
+
+        summary["bbt"] = (
+            DEFAULT_SUMMARY["bbt"].copy()
+        )
+
+    for stream in ["bbb", "bbt"]:
+
+        for key, default_value in DEFAULT_SUMMARY[stream].items():
+
+            if key not in summary[stream]:
+
+                summary[stream][key] = default_value
+
+    st.session_state.forecast_bbb = df_bbb
+
+    st.session_state.forecast_bbt = df_bbt
+
+    st.session_state.forecast_summary = summary
+
+    st.session_state.loaded_history_id = history_id
+
+    st.session_state.forecast_loaded = True
+
+    st.session_state.loaded_forecast_info = {
+        "id": record["id"],
+        "nama_user": record["nama_user"],
+        "periode_forecast": record["periode_forecast"],
+        "history_months": record["history_months"],
+        "created_at": record["created_at"],
+    }
+
+    forecast_date = parse_period(
+        record["periode_forecast"]
+    )
+
+    if forecast_date is not None and not pd.isna(forecast_date):
+
+        st.session_state.forecast_setting = {
+            "month": int(
+                forecast_date.month
+            ),
+            "year": int(
+                forecast_date.year
+            ),
+            "history_months": int(
+                record["history_months"]
+                or 3
+            ),
+        }
+
+        st.session_state.last_forecast_period = (
+            record["periode_forecast"]
+        )
+
+        st.session_state.last_forecast_history_months = (
+            int(
+                record["history_months"]
+                or 3
+            )
+        )
+
+    return True, "Forecast berhasil dimuat."
+
+
+# =========================================================
+# HELP CONTENT
+# =========================================================
+
+HELP_CONTENT = {
+
+    "📊 Dashboard": [
+
+        {
+            "title": "Dashboard — Fungsi Utama",
+            "content": """
+### Fungsi Dashboard
+
+Dashboard merupakan halaman ringkasan dari hasil forecasting yang sudah dibuat atau dimuat dari History.
+
+Dashboard digunakan untuk melihat:
+
+- Performance forecast BBB
+- Performance forecast BBT
+- WAPE
+- Forecast Accuracy
+- Hasil forecast masing-masing item
+- Informasi forecast yang sedang dimuat
+- Export hasil forecast ke Excel
+
+Dashboard **tidak melakukan perhitungan forecasting baru**.
+
+Perhitungan forecasting dilakukan pada menu:
+
+**🔮 Forecast**
+
+---
+
+### BBB dan BBT
+
+BBB dan BBT selalu dihitung secara **terpisah**.
+
+Artinya:
+
+**OUT BBB → Forecast BBB**
+
+dan
+
+**OUT BBT → Forecast BBT**
+
+Data BBB dan BBT tidak digabungkan menjadi satu demand.
+            """,
+        },
+
+        {
+            "title": "Dashboard — Dari Mana WAPE Berasal?",
+            "content": """
+### Dari Mana WAPE Berasal?
+
+WAPE yang tampil di Dashboard berasal dari proses:
+
+**Backtesting histori**
+
+Bukan dari bulan forecast yang akan datang.
+
+Kenapa?
+
+Karena ketika sistem melakukan forecast untuk bulan yang akan datang, nilai actual bulan tersebut belum tersedia.
+
+Jadi sistem menggunakan data histori yang sudah memiliki:
+
+- Actual OUT
+- Forecast hasil backtesting
+
+Kemudian keduanya dibandingkan untuk mengetahui error.
+
+---
+
+### Apa itu Backtesting?
+
+Backtesting adalah proses seolah-olah sistem sedang melakukan forecast pada periode yang sudah lewat.
+
+Contoh histori:
+
+- Juni
+- Juli
+- Agustus
+
+Sistem melakukan simulasi forecast pada histori tersebut, kemudian membandingkan hasil forecast dengan actual yang memang sudah diketahui.
+
+Contoh:
+
+**Actual Juni = 1.000**
+
+**Forecast Backtest Juni = 900**
+
+Maka error absolut:
+
+**|1.000 − 900| = 100**
+
+Proses yang sama dilakukan pada periode backtesting lainnya.
+
+Dari seluruh error tersebut kemudian dihitung WAPE.
+
+---
+
+### Penting
+
+Jadi WAPE menunjukkan:
+
+**Seberapa besar error metode forecast ketika diuji menggunakan histori yang actual-nya sudah diketahui.**
+
+WAPE bukan error forecast masa depan.
+            """,
+        },
+
+        {
+            "title": "Dashboard — Contoh WAPE & Accuracy",
+            "content": """
+### Contoh Perhitungan WAPE
+
+Misalnya hasil backtesting untuk satu item:
+
+| Bulan | Actual | Forecast Backtest | Error Absolut |
+|---|---:|---:|---:|
+| Juni | 1.000 | 900 | 100 |
+| Juli | 1.200 | 1.100 | 100 |
+| Agustus | 800 | 900 | 100 |
+
+### Langkah 1 — Total Actual
+
+1.000 + 1.200 + 800
+
+**= 3.000**
+
+### Langkah 2 — Total Error Absolut
+
+100 + 100 + 100
+
+**= 300**
+
+### Langkah 3 — Hitung WAPE
+
+**WAPE = Total Error Absolut ÷ Total Actual × 100%**
+
+**WAPE = 300 ÷ 3.000 × 100%**
+
+**WAPE = 10%**
+
+### Langkah 4 — Forecast Accuracy
+
+**Forecast Accuracy = 100% − WAPE**
+
+**Forecast Accuracy = 100% − 10%**
+
+**Forecast Accuracy = 90%**
+
+---
+
+### Kesimpulan
+
+Pada contoh tersebut:
+
+**WAPE = 10%**
+
+**Forecast Accuracy = 90%**
+
+Semakin kecil WAPE → semakin baik.
+
+Semakin besar Forecast Accuracy → semakin baik.
+
+---
+
+### BBB dan BBT
+
+Perhitungan dilakukan secara terpisah:
+
+**WAPE BBB → berdasarkan histori OUT BBB**
+
+**WAPE BBT → berdasarkan histori OUT BBT**
+
+Keduanya tidak digabungkan.
+            """,
+        },
+
+        {
+            "title": "Dashboard — Forecast & Export",
+            "content": """
+### Hasil Forecast
+
+Tabel forecast menampilkan:
+
+- Nama Barang
+- Satuan
+- Forecast
+- Best Method
+- WAPE
+
+### Export Excel
+
+Hasil forecast dapat diekspor menjadi Excel.
+
+Excel terdiri dari:
+
+1. **Forecast Bulanan**
+2. **Detail BBB**
+3. **Detail BBT**
+
+Dengan demikian hasil forecast dapat digunakan kembali untuk kebutuhan reporting dan operasional.
+
+---
+
+### Catatan
+
+Dashboard hanya menampilkan hasil yang sudah dihitung.
+
+Untuk membuat forecast baru, gunakan menu:
+
+**🔮 Forecast**
+            """,
+        },
+
+    ],
+
+    "📦 Data OUT": [
+
+        {
+            "title": "Data OUT — Fungsi",
+            "content": """
+### Fungsi Data OUT
+
+Menu Data OUT digunakan untuk memasukkan histori pemakaian barang ke dalam sistem.
+
+Data inilah yang menjadi dasar forecasting.
+
+Format Excel wajib:
+
+- **Bulan**
+- **Nama Barang**
+- **Satuan**
+- **OUT BBB**
+- **OUT BBT**
+
+Pastikan nama kolom sesuai format tersebut.
+
+---
+
+### Alur Data
+
+Secara sederhana:
+
+**Excel OUT**
+
+↓
+
+**Data OUT**
+
+↓
+
+**Validasi**
+
+↓
+
+**Forecast**
+
+Data OUT tidak langsung menjadi forecast.
+
+Data harus melewati proses forecasting terlebih dahulu.
+            """,
+        },
+
+        {
+            "title": "Data OUT — BBB & BBT",
+            "content": """
+### BBB dan BBT
+
+OUT BBB dan OUT BBT diproses secara terpisah.
+
+Contoh:
+
+| Bulan | Item | OUT BBB | OUT BBT |
+|---|---|---:|---:|
+| Juni | Burger Bun | 3.000 | 2.000 |
+| Juli | Burger Bun | 3.500 | 2.300 |
+
+Sistem tidak menjumlahkan:
+
+**3.000 + 2.000**
+
+sebagai satu demand.
+
+BBB tetap memiliki forecast sendiri.
+
+BBT tetap memiliki forecast sendiri.
+
+---
+
+### Kenapa Dipisahkan?
+
+Karena pola demand BBB dan BBT dapat berbeda.
+
+Contohnya:
+
+- BBB dapat mengalami kenaikan OUT.
+- BBT dapat mengalami penurunan OUT.
+
+Jika digabung, pola tersebut akan tercampur dan hasil forecast bisa menjadi kurang representatif.
+
+Karena itu sistem mempertahankan dua stream:
+
+**BBB**
+
+dan
+
+**BBT**
+            """,
+        },
+
+        {
+            "title": "Data OUT — Persiapan Data",
+            "content": """
+### Sebelum Upload
+
+Pastikan:
+
+- Nama barang konsisten
+- Satuan konsisten
+- Bulan dapat dibaca sistem
+- OUT BBB berupa angka
+- OUT BBT berupa angka
+- Tidak ada nilai negatif
+- Tidak ada data kosong
+- Histori tersedia sebelum periode forecast
+
+Jika terdapat masalah, gunakan menu:
+
+**✅ Validasi**
+
+untuk mengetahui bagian mana yang perlu diperbaiki.
+
+---
+
+### Histori
+
+Jumlah histori yang dapat digunakan bersifat fleksibel.
+
+Contoh:
+
+**3 bulan**
+
+atau
+
+**6 bulan**
+
+atau
+
+**12 bulan**
+
+tergantung data yang tersedia dan setting yang dipilih.
+            """,
+        },
+
+    ],
+
+    "⚙️ Setting": [
+
+        {
+            "title": "Setting — Periode Forecast",
+            "content": """
+### Fungsi Setting
+
+Setting digunakan untuk menentukan periode forecast dan jumlah histori yang akan digunakan.
+
+### Bulan Forecast
+
+Menentukan bulan yang ingin diprediksi.
+
+Contoh:
+
+**September 2026**
+
+berarti sistem akan membuat forecast untuk September 2026.
+
+### Tahun Forecast
+
+Menentukan tahun periode forecast.
+
+---
+
+### Contoh
+
+Jika setting:
+
+**Bulan = September**
+
+**Tahun = 2026**
+
+maka:
+
+**Periode Forecast = September 2026**
+            """,
+        },
+
+        {
+            "title": "Setting — Periode Histori",
+            "content": """
+### Periode Histori
+
+Menentukan berapa bulan histori yang digunakan untuk forecasting.
+
+Contoh:
+
+**3 bulan**
+
+berarti sistem mengambil 3 periode histori terakhir sebelum bulan forecast.
+
+Misalnya forecast September 2026:
+
+- Juni 2026
+- Juli 2026
+- Agustus 2026
+
+---
+
+### Jika Memilih 6 Bulan
+
+Sistem akan mengambil 6 periode terakhir sebelum September 2026.
+
+Contohnya:
+
+- Maret
+- April
+- Mei
+- Juni
+- Juli
+- Agustus
+
+---
+
+### Catatan
+
+Histori harus tersedia sebelum periode forecast.
+
+Jika setting membutuhkan 6 bulan tetapi hanya tersedia 4 bulan, forecast tidak dapat dijalankan.
+            """,
+        },
+
+    ],
+
+    "✅ Validasi": [
+
+        {
+            "title": "Validasi — Pemeriksaan Data",
+            "content": """
+### Fungsi Validasi
+
+Validasi memastikan data OUT siap digunakan untuk forecasting.
+
+Sistem memeriksa:
+
+1. Kolom wajib
+2. Data kosong
+3. Nilai OUT
+4. Nilai negatif
+5. Data duplikat
+6. Format periode
+7. Ketersediaan histori
+
+---
+
+### Status
+
+**OK**
+
+Data memenuhi pemeriksaan.
+
+**WARNING**
+
+Ada kondisi yang perlu diperhatikan tetapi tidak selalu menghentikan proses.
+
+**ERROR**
+
+Data harus diperbaiki sebelum forecasting.
+
+---
+
+### Tujuan
+
+Validasi membantu memastikan data yang masuk ke proses forecasting memiliki struktur yang benar dan dapat diproses dengan aman.
+            """,
+        },
+
+        {
+            "title": "Validasi — Data Duplikat",
+            "content": """
+### Data Duplikat
+
+Duplikat dicek berdasarkan:
+
+**Bulan + Nama Barang + Satuan**
+
+Contoh:
+
+| Bulan | Nama Barang | Satuan |
+|---|---|---|
+| Juni | Burger Bun | Pack |
+| Juni | Burger Bun | Pack |
+
+Jika terdapat baris seperti ini, sistem memberikan WARNING.
+
+Data tersebut tetap dapat diagregasi berdasarkan item dan periode ketika forecasting dilakukan.
+
+---
+
+### Kenapa Bukan ERROR?
+
+Karena beberapa sumber data dapat memiliki lebih dari satu baris untuk item dan periode yang sama.
+
+Sistem dapat melakukan agregasi ketika proses forecasting.
+
+Namun user tetap perlu mengetahui bahwa data tersebut memiliki duplikasi.
+            """,
+        },
+
+    ],
+
+    "🔮 Forecast": [
+
+        {
+            "title": "Forecast — Alur Perhitungan",
+            "content": """
+### Alur Forecasting
+
+Secara sederhana prosesnya:
+
+**Data OUT**
+
+↓
+
+**Ambil Histori**
+
+↓
+
+**Backtesting**
+
+↓
+
+**MA / WMA / XGBoost**
+
+↓
+
+**Hitung WAPE**
+
+↓
+
+**Pilih metode dengan WAPE terendah**
+
+↓
+
+**Forecast periode berikutnya**
+
+---
+
+### BBB dan BBT
+
+Proses tersebut dilakukan secara terpisah.
+
+**OUT BBB → Forecast BBB**
+
+**OUT BBT → Forecast BBT**
+
+Jadi hasil performa BBB tidak dicampur dengan BBT.
+            """,
+        },
+
+        {
+            "title": "Forecast — MA & WMA",
+            "content": """
+### MA — Moving Average
+
+MA menggunakan rata-rata beberapa periode terakhir.
+
+Contoh:
+
+MA 2:
+
+**Forecast = (Actual bulan 1 + Actual bulan 2) ÷ 2**
+
+Jika:
+
+Bulan 1 = 1.000
+
+Bulan 2 = 1.200
+
+Maka:
+
+**MA 2 = (1.000 + 1.200) ÷ 2**
+
+**= 1.100**
+
+MA cocok digunakan ketika demand relatif stabil.
+
+---
+
+### WMA — Weighted Moving Average
+
+WMA memberikan bobot lebih besar kepada periode yang lebih baru.
+
+Artinya data terbaru memiliki pengaruh lebih besar terhadap forecast.
+
+WMA berguna ketika kondisi demand terbaru dianggap lebih relevan dibandingkan periode yang lebih lama.
+            """,
+        },
+
+        {
+            "title": "Forecast — XGBoost",
+            "content": """
+### XGBoost
+
+XGBoost adalah metode machine learning yang dapat mempelajari pola historis untuk menghasilkan forecast.
+
+Dalam sistem ini XGBoost tidak otomatis dianggap sebagai metode terbaik.
+
+XGBoost harus dibandingkan dengan metode lain menggunakan:
+
+**Backtesting**
+
+dan
+
+**WAPE**
+
+Contoh:
+
+| Metode | WAPE |
+|---|---:|
+| MA 2 | 12,40% |
+| WMA 2 | 9,80% |
+| XGBoost | 7,50% |
+
+Maka XGBoost menjadi kandidat terbaik karena memiliki WAPE paling rendah.
+
+Namun jika MA atau WMA memiliki WAPE lebih rendah, metode tersebut yang dipilih.
+            """,
+        },
+
+        {
+            "title": "Forecast — Kenapa XGBoost Tidak Dipakai?",
+            "content": f"""
+### Kenapa XGBoost Bisa Tidak Dipakai?
+
+XGBoost membutuhkan data yang cukup untuk belajar pola.
+
+Jika histori terlalu sedikit, model machine learning dapat menjadi kurang stabil karena jumlah data training dan backtesting terbatas.
+
+Karena itu sistem menggunakan batas minimum:
+
+**Minimal histori XGBoost = {XGBOOST_MIN_HISTORY} bulan**
+
+---
+
+### Contoh
+
+Jika histori tersedia:
+
+**3 bulan**
+
+→ XGBoost dapat digunakan dan ikut dibandingkan dengan MA/WMA melalui backtesting.
+
+Jika histori tersedia:
+
+**6 bulan**
+
+→ XGBoost dapat digunakan dan ikut dibandingkan dengan MA/WMA melalui backtesting.
+
+Jika histori tersedia:
+
+**{XGBOOST_MIN_HISTORY} bulan atau lebih**
+
+→ XGBoost dapat ikut dibandingkan dengan metode lainnya, selama package XGBoost tersedia.
+
+---
+
+### Kenapa Ada Batas?
+
+Tujuannya bukan untuk mengatakan XGBoost jelek.
+
+Tujuannya agar sistem tidak memaksakan machine learning ketika data histori terlalu sedikit.
+
+Untuk histori terbatas, metode statistik seperti:
+
+**MA**
+
+dan
+
+**WMA**
+
+lebih sesuai untuk dijadikan kandidat.
+
+---
+
+### Jika Package Tidak Tersedia
+
+Jika package XGBoost belum ter-install, XGBoost juga tidak akan digunakan.
+
+Ini bukan error pada proses forecasting.
+
+Sistem akan tetap menggunakan metode forecasting yang tersedia.
+            """,
+        },
+
+        {
+            "title": "Forecast — Auto Best Method",
+            "content": """
+### Auto Best Method
+
+Sistem tidak meminta user memilih metode secara manual.
+
+Sistem melakukan:
+
+1. Menentukan kandidat metode berdasarkan jumlah histori.
+2. Menjalankan backtesting.
+3. Menghasilkan forecast backtest.
+4. Membandingkan dengan actual.
+5. Menghitung WAPE.
+6. Membandingkan WAPE setiap metode.
+7. Memilih metode dengan WAPE terendah.
+8. Menggunakan metode tersebut untuk forecast periode berikutnya.
+
+---
+
+### Contoh
+
+Untuk Burger Bun:
+
+| Metode | WAPE |
+|---|---:|
+| MA 2 | 12% |
+| WMA 2 | 9% |
+| XGBoost | 7% |
+
+Maka:
+
+**Best Method = XGBoost**
+
+Karena WAPE XGBoost paling rendah.
+
+---
+
+### Item Berbeda Bisa Berbeda Metode
+
+Contohnya:
+
+**Burger Bun → WMA 2**
+
+sedangkan:
+
+**Chicken Patty → MA 3**
+
+atau:
+
+**Item lain → XGBoost**
+
+Jadi sistem tidak memaksakan satu metode untuk seluruh item.
+            """,
+        },
+
+        {
+            "title": "Forecast — Dari Mana WAPE Berasal?",
+            "content": """
+### WAPE Berasal dari Backtesting
+
+WAPE yang digunakan untuk memilih Best Method berasal dari hasil pengujian metode terhadap histori.
+
+Sistem tidak menghitung WAPE dari forecast masa depan.
+
+Alurnya:
+
+**Histori Actual**
+
+↓
+
+**Simulasikan Forecast**
+
+↓
+
+**Forecast Backtest**
+
+↓
+
+**Bandingkan dengan Actual**
+
+↓
+
+**Hitung Error Absolut**
+
+↓
+
+**Hitung WAPE**
+
+---
+
+### Contoh Sederhana
+
+Misalnya:
+
+| Periode | Actual | Forecast Backtest | Error |
+|---|---:|---:|---:|
+| Juni | 1.000 | 900 | 100 |
+| Juli | 1.200 | 1.100 | 100 |
+| Agustus | 800 | 900 | 100 |
+
+Total Actual:
+
+**3.000**
+
+Total Error:
+
+**300**
+
+Maka:
+
+**WAPE = 300 ÷ 3.000 × 100%**
+
+**= 10%**
+
+---
+
+### Apa Artinya?
+
+Metode tersebut menghasilkan error agregat sebesar:
+
+**10% terhadap total actual pada data backtesting.**
+
+Kemudian metode lain juga diuji.
+
+Metode dengan WAPE paling rendah dipilih sebagai:
+
+**Best Method**
+            """,
+        },
+
+        {
+            "title": "Forecast — WAPE & Accuracy",
+            "content": """
+### WAPE
+
+WAPE adalah Weighted Absolute Percentage Error.
+
+Rumus yang digunakan sistem:
+
+**WAPE = Σ |Actual − Forecast Backtest| ÷ Σ |Actual| × 100%**
+
+Keterangan:
+
+**Actual**
+
+= nilai OUT yang benar-benar terjadi pada histori.
+
+**Forecast Backtest**
+
+= hasil forecast simulasi untuk periode histori tersebut.
+
+**Error Absolut**
+
+= |Actual − Forecast Backtest|
+
+---
+
+### Forecast Accuracy
+
+Rumus:
+
+**Forecast Accuracy = 100% − WAPE**
+
+Contoh:
+
+WAPE = **10%**
+
+maka:
+
+**Forecast Accuracy = 90%**
+
+---
+
+### Prinsip Penilaian
+
+**WAPE semakin kecil → semakin baik**
+
+**Forecast Accuracy semakin besar → semakin baik**
+
+---
+
+### BBB dan BBT
+
+Perhitungan dilakukan secara terpisah.
+
+**WAPE BBB**
+
+dihitung dari actual dan forecast backtest BBB.
+
+**WAPE BBT**
+
+dihitung dari actual dan forecast backtest BBT.
+
+Tidak digabungkan menjadi satu nilai.
+
+---
+
+### Catatan Penting
+
+WAPE adalah ukuran performa berdasarkan histori.
+
+Untuk bulan forecast yang belum terjadi, actual belum tersedia sehingga error aktual bulan tersebut belum bisa dihitung.
+            """,
+        },
+
+    ],
+
+    "🕘 History": [
+
+        {
+            "title": "History — Fungsi",
+            "content": """
+### Fungsi History
+
+History menyimpan hasil forecasting yang sudah dibuat.
+
+Data yang disimpan antara lain:
+
+- Nama user
+- Periode forecast
+- Jumlah histori
+- Forecast BBB
+- Forecast BBT
+- Summary performance
+- Tanggal penyimpanan
+
+History digunakan agar hasil forecast dapat dibuka kembali tanpa melakukan perhitungan ulang.
+            """,
+        },
+
+        {
+            "title": "History — Load",
+            "content": """
+### Load History
+
+User dapat memilih hasil forecast dari daftar History.
+
+Setelah memilih:
+
+**📂 Load History**
+
+sistem akan:
+
+1. Membaca data dari database.
+2. Memuat forecast BBB.
+3. Memuat forecast BBT.
+4. Memuat WAPE.
+5. Memuat Forecast Accuracy.
+6. Memuat metode terbaik.
+7. Mengembalikan setting forecast.
+8. Mengarahkan user ke Dashboard.
+
+Dengan demikian hasil lama dapat langsung direview kembali.
+
+---
+
+### Keuntungan
+
+Forecast yang sudah disimpan tidak perlu dihitung ulang hanya untuk melihat hasilnya.
+            """,
+        },
+
+        {
+            "title": "History — Delete",
+            "content": """
+### Delete History
+
+History dapat dihapus satu per satu.
+
+Tersedia juga opsi:
+
+**Hapus Semua History**
+
+Gunakan fungsi ini dengan hati-hati karena seluruh hasil forecasting yang tersimpan akan dihapus dari database aplikasi.
+
+---
+
+### Catatan
+
+History tidak menghapus Data OUT yang sedang berada di session aplikasi.
+
+History dan Data OUT merupakan dua bagian penyimpanan yang berbeda.
+            """,
+        },
+
+    ],
+}
+
+
+# =========================================================
+# HELP DIALOG
+# =========================================================
+
+@st.dialog("ⓘ Bantuan")
+def help_dialog():
+
+    menu_name = st.session_state.get(
+        "help_menu",
+        "📊 Dashboard",
+    )
+
+    pages = HELP_CONTENT.get(
+        menu_name,
+        HELP_CONTENT["📊 Dashboard"],
+    )
+
+    total_pages = len(pages)
+
+    current_page = int(
+        st.session_state.get(
+            "help_page",
+            1,
+        )
+    )
+
+    current_page = max(
+        1,
+        min(
+            current_page,
+            total_pages,
+        ),
+    )
+
+    st.session_state.help_page = current_page
+
+    page_data = pages[
+        current_page - 1
+    ]
+
+    st.markdown(
+        f"""
+        <div class="help-dialog-content">
+            <div class="help-page-title">
+                {page_data["title"]}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        page_data["content"]
+    )
+
+    st.divider()
+
+    st.markdown(
+        f"""
+        <div class="help-page-indicator">
+            Halaman {current_page} dari {total_pages}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3 = st.columns(
+        [1, 1, 1]
+    )
+
+    with col1:
+
+        if current_page > 1:
+
+            if st.button(
+                "← Back",
+                use_container_width=True,
+                key=f"help_back_{current_page}",
+            ):
+
+                st.session_state.help_page = (
+                    current_page - 1
+                )
+
+                st.rerun()
+
+    with col2:
+
+        if st.button(
+            "✕ Tutup",
+            use_container_width=True,
+            key=f"help_close_{current_page}",
+        ):
+
+            st.session_state.show_help = False
+
+            st.rerun()
+
+    with col3:
+
+        if current_page < total_pages:
+
+            if st.button(
+                "Next →",
+                type="primary",
+                use_container_width=True,
+                key=f"help_next_{current_page}",
+            ):
+
+                st.session_state.help_page = (
+                    current_page + 1
+                )
+
+                st.rerun()
+
+
+# =========================================================
+# SIDEBAR
+# =========================================================
+
+st.sidebar.markdown(
+    "## 🍔 Demand Planning"
+)
+
+
+# ---------------------------------------------------------
+# INITIAL MENU DARI QUERY PARAMETER
+# ---------------------------------------------------------
+
+query_menu = st.query_params.get(
+    "menu",
+    "dashboard",
+)
+
+initial_menu = MENU_QUERY_MAP.get(
+    query_menu,
+    "📊 Dashboard",
+)
+
+initial_index = MENU_OPTIONS.index(
+    initial_menu
+)
+
+
+menu = st.sidebar.radio(
+    "MENU",
+    MENU_OPTIONS,
+    index=initial_index,
+    key="sidebar_menu",
+)
+
+
+# Update URL sesuai menu yang dipilih
+
+current_query_menu = MENU_REVERSE_MAP.get(
+    menu,
+    "dashboard",
+)
+
+if st.query_params.get("menu") != current_query_menu:
+
+    st.query_params["menu"] = current_query_menu
+
+
+st.sidebar.divider()
+
+
+if st.sidebar.button(
+    "ⓘ Bantuan",
+    use_container_width=True,
+    key="sidebar_help_button",
+):
+
+    st.session_state.help_menu = menu
+
+    st.session_state.help_page = 1
+
+    st.session_state.show_help = True
+
+    st.rerun()
+
+
+st.sidebar.divider()
+
+
+st.sidebar.caption(
+    "Main Warehouse Batu Ceper"
+)
+
+
+# =========================================================
+# HEADER
+# =========================================================
+
+col_title, col_help = st.columns(
+    [8, 1]
+)
+
+
+with col_title:
+
+    st.markdown(
+        '<div class="main-title">🍔 DEMAND PLANNING SYSTEM</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="sub-title">Main Warehouse Batu Ceper</div>',
+        unsafe_allow_html=True,
+    )
+
+
+with col_help:
+
+    if st.button(
+        "ⓘ",
+        help="Bantuan",
+        key="header_help_button",
+    ):
+
+        st.session_state.help_menu = menu
+
+        st.session_state.help_page = 1
+
+        st.session_state.show_help = True
+
+        st.rerun()
+
+
+# =========================================================
+# SHOW HELP DIALOG
+# =========================================================
+
+if st.session_state.show_help:
+
+    help_dialog()
+
+
+# =========================================================
+# DASHBOARD
+# =========================================================
+
+if menu == "📊 Dashboard":
+
+    st.markdown(
+        '<div class="section-title">📊 Dashboard</div>',
+        unsafe_allow_html=True,
+    )
+
+    # -----------------------------------------------------
+    # LOAD FORECAST
+    # -----------------------------------------------------
+
+    st.markdown(
+        "### Load Forecasting"
+    )
+
+    histories = load_history()
+
+    if histories:
+
+        history_options = {}
+
+        for row in histories:
+
+            label = (
+                f"Forecast "
+                f"{row['periode_forecast']} "
+                f"— "
+                f"{row['nama_user']} "
+                f"(ID {row['id']})"
+            )
+
+            history_options[label] = row["id"]
+
+        selected_label = st.selectbox(
+            "Pilih Forecast",
+            list(history_options.keys()),
+            key="dashboard_history_select",
+        )
+
+        selected_id = history_options[
+            selected_label
+        ]
+
+        if st.button(
+            "LOAD",
+            type="primary",
+            key="dashboard_load_button",
+        ):
+
+            success, message = (
+                load_forecast_to_session(
+                    selected_id
+                )
+            )
+
+            if success:
+
+                st.success(
+                    message
+                )
+
+                st.rerun()
+
+            else:
+
+                st.error(
+                    message
+                )
+
+    else:
+
+        st.info(
+            "Belum ada forecast yang tersimpan."
+        )
+
+    # -----------------------------------------------------
+    # LOADED INFORMATION
+    # -----------------------------------------------------
+
+    if (
+        st.session_state.forecast_loaded
+        and st.session_state.loaded_forecast_info
+    ):
+
+        info = (
+            st.session_state.loaded_forecast_info
+        )
+
+        st.markdown(
+            f"""
+            <div class="loaded-box">
+                <b>✓ Forecast sedang dimuat</b><br>
+                Forecast {info["periode_forecast"]}
+                —
+                {info["nama_user"]}
+                <br>
+                <small>
+                    Histori: {info["history_months"]} bulan<br>
+                    Disimpan: {info["created_at"]}
+                </small>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # -----------------------------------------------------
+    # PERFORMANCE
+    # -----------------------------------------------------
+
+    st.markdown(
+        "### Performance Forecasting"
+    )
+
+    summary = (
+        st.session_state.forecast_summary
+    )
+
+    summary_bbb = summary.get(
+        "bbb",
+        {},
+    )
+
+    summary_bbt = summary.get(
+        "bbt",
+        {},
+    )
+
+    col_bbb, col_bbt = st.columns(2)
+
+    with col_bbb:
+
+        st.markdown(
+            '<div class="stream-title">PERSENTASE BBB</div>',
+            unsafe_allow_html=True,
+        )
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+
+            st.markdown(
+                f"""
+                <div class="metric-card">
+                    <div class="metric-label">
+                        WAPE
+                    </div>
+                    <div class="metric-value">
+                        {format_percent(
+                            summary_bbb.get("wape")
+                        )}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with c2:
+
+            st.markdown(
+                f"""
+                <div class="metric-card">
+                    <div class="metric-label">
+                        FORECAST ACCURACY
+                    </div>
+                    <div class="metric-value">
+                        {format_percent(
+                            summary_bbb.get("accuracy")
+                        )}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    with col_bbt:
+
+        st.markdown(
+            '<div class="stream-title">PERSENTASE BBT</div>',
+            unsafe_allow_html=True,
+        )
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+
+            st.markdown(
+                f"""
+                <div class="metric-card">
+                    <div class="metric-label">
+                        WAPE
+                    </div>
+                    <div class="metric-value">
+                        {format_percent(
+                            summary_bbt.get("wape")
+                        )}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with c2:
+
+            st.markdown(
+                f"""
+                <div class="metric-card">
+                    <div class="metric-label">
+                        FORECAST ACCURACY
+                    </div>
+                    <div class="metric-value">
+                        {format_percent(
+                            summary_bbt.get("accuracy")
+                        )}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.divider()
+
+    # -----------------------------------------------------
+    # FORECAST TABLES
+    # -----------------------------------------------------
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        st.markdown(
+            "### Forecast BBB"
+        )
+
+        df_bbb = (
+            st.session_state.forecast_bbb
+        )
+
+        if df_bbb.empty:
+
+            st.info(
+                "Belum ada forecast BBB."
+            )
+
+        else:
+
+            display_forecast_table(
+                df_bbb,
+                limit=5,
+            )
+
+            st.caption(
+                f"Menampilkan 5 dari "
+                f"{len(df_bbb)} item."
+            )
+
+    with col2:
+
+        st.markdown(
+            "### Forecast BBT"
+        )
+
+        df_bbt = (
+            st.session_state.forecast_bbt
+        )
+
+        if df_bbt.empty:
+
+            st.info(
+                "Belum ada forecast BBT."
+            )
+
+        else:
+
+            display_forecast_table(
+                df_bbt,
+                limit=5,
+            )
+
+            st.caption(
+                f"Menampilkan 5 dari "
+                f"{len(df_bbt)} item."
+            )
+
+    # -----------------------------------------------------
+    # EXPORT EXCEL
+    # -----------------------------------------------------
+
+    if (
+        not st.session_state.forecast_bbb.empty
+        or not st.session_state.forecast_bbt.empty
+    ):
+
+        st.divider()
+
+        st.markdown(
+            "### Export Forecast"
+        )
+
+        if not forecast_matches_current_setting():
+
+            st.warning(
+                "Hasil forecast tidak sesuai dengan "
+                "setting saat ini. Jalankan forecast "
+                "kembali sebelum export."
+            )
+
+        else:
+
+            try:
+
+                export_data = export_forecast_excel(
+                    forecast_bbb=(
+                        st.session_state.forecast_bbb
+                    ),
+                    forecast_bbt=(
+                        st.session_state.forecast_bbt
+                    ),
+                    periode_forecast=(
+                        forecast_period_text()
+                    ),
+                    nama_user=(
+                        (
+                            st.session_state
+                            .loaded_forecast_info
+                            or {}
+                        ).get(
+                            "nama_user",
+                            "Demand Planner",
+                        )
+                    ),
+                )
+
+                filename = generate_export_filename(
+                    forecast_period_text()
+                )
+
+                st.download_button(
+                    label="📥 Export Excel",
+                    data=export_data,
+                    file_name=filename,
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "spreadsheetml.sheet"
+                    ),
+                    use_container_width=True,
+                    type="primary",
+                    key="dashboard_export_button",
+                )
+
+                st.caption(
+                    "Excel berisi Forecast Bulanan, "
+                    "Detail BBB, dan Detail BBT."
+                )
+
+            except Exception as e:
+
+                st.error(
+                    f"Gagal membuat file Excel: {e}"
+                )
+
+
+# =========================================================
+# DATA OUT
+# =========================================================
+
+elif menu == "📦 Data OUT":
+
+    st.markdown(
+        '<div class="section-title">📦 Data OUT</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.info(
+        "Upload Excel dengan format: "
+        "Bulan, Nama Barang, Satuan, OUT BBB, OUT BBT"
+    )
+
+    uploaded_file = st.file_uploader(
+        "Upload Excel",
+        type=["xlsx", "xls"],
+    )
+
+    if uploaded_file is not None:
+
+        try:
+
+            df = pd.read_excel(
+                uploaded_file
+            )
+
+            required_columns = [
+                "Bulan",
+                "Nama Barang",
+                "Satuan",
+                "OUT BBB",
+                "OUT BBT",
+            ]
+
+            missing = [
+                col
+                for col in required_columns
+                if col not in df.columns
+            ]
+
+            if missing:
+
+                st.error(
+                    "Kolom tidak ditemukan: "
+                    + ", ".join(missing)
+                )
+
+                st.session_state.data_out = (
+                    pd.DataFrame()
+                )
+
+                st.session_state.data_valid = False
+
+                reset_forecast_session()
+
+            else:
+
+                st.session_state.data_out = (
+                    df.copy()
+                )
+
+                st.session_state.data_valid = False
+
+                reset_forecast_session()
+
+                st.success(
+                    "Data OUT berhasil dimuat."
+                )
+
+                available_months = (
+                    get_available_history(df)
+                )
+
+                if available_months:
+
+                    month_text = ", ".join(
+                        [
+                            f"{BULAN[x.month]} {x.year}"
+                            for x in available_months
+                        ]
+                    )
+
+                    st.info(
+                        f"Histori terdeteksi: "
+                        f"{month_text}"
+                    )
+
+                else:
+
+                    st.warning(
+                        "Tidak ditemukan histori "
+                        "sebelum periode forecast."
+                    )
+
+                st.dataframe(
+                    df,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        except Exception as e:
+
+            st.error(
+                f"Gagal membaca file: {e}"
+            )
+
+    elif not st.session_state.data_out.empty:
+
+        st.dataframe(
+            st.session_state.data_out,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# =========================================================
+# SETTING
+# =========================================================
+
+elif menu == "⚙️ Setting":
+
+    st.markdown(
+        '<div class="section-title">⚙️ Setting Forecast</div>',
+        unsafe_allow_html=True,
+    )
+
+    current = (
+        st.session_state.forecast_setting
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+
+        month_name = st.selectbox(
+            "Bulan Forecast",
+            list(BULAN.values()),
+            index=current["month"] - 1,
+            key="setting_month",
+        )
+
+        selected_month = next(
+            key
+            for key, value in BULAN.items()
+            if value == month_name
+        )
+
+    with col2:
+
+        selected_year = st.selectbox(
+            "Tahun Forecast",
+            list(range(2024, 2036)),
+            index=(
+                current["year"] - 2024
+                if 2024 <= current["year"] <= 2035
+                else 2
+            ),
+            key="setting_year",
+        )
+
+    with col3:
+
+        selected_history = st.number_input(
+            "Periode Histori",
+            min_value=1,
+            max_value=24,
+            value=int(
+                current["history_months"]
+            ),
+            step=1,
+            key="setting_history",
+        )
+
+    if st.button(
+        "💾 Simpan Setting",
+        type="primary",
+        key="save_setting_button",
+    ):
+
+        old_setting = (
+            st.session_state.forecast_setting.copy()
+        )
+
+        new_setting = {
+            "month": selected_month,
+            "year": selected_year,
+            "history_months": int(
+                selected_history
+            ),
+        }
+
+        setting_changed = (
+            old_setting != new_setting
+        )
+
+        st.session_state.forecast_setting = (
+            new_setting
+        )
+
+        if setting_changed:
+
+            reset_forecast_session()
+
+            st.success(
+                "Setting berhasil disimpan. "
+                "Hasil forecast lama di-reset karena "
+                "periode/setting berubah."
+            )
+
+        else:
+
+            st.success(
+                "Setting berhasil disimpan."
+            )
+
+    st.divider()
+
+    setting = (
+        st.session_state.forecast_setting
+    )
+
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "Setting": [
+                    "Bulan Forecast",
+                    "Tahun Forecast",
+                    "Periode Histori",
+                ],
+                "Nilai": [
+                    BULAN[setting["month"]],
+                    setting["year"],
+                    setting["history_months"],
+                ],
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# =========================================================
+# VALIDASI
+# =========================================================
+
+elif menu == "✅ Validasi":
+
+    st.markdown(
+        '<div class="section-title">✅ Validasi Data</div>',
+        unsafe_allow_html=True,
+    )
+
+    df = st.session_state.data_out
+
+    if df.empty:
+
+        st.warning(
+            "Belum ada Data OUT."
+        )
+
+        st.session_state.data_valid = False
+
+    else:
+
+        required_columns = [
+            "Bulan",
+            "Nama Barang",
+            "Satuan",
+            "OUT BBB",
+            "OUT BBT",
+        ]
+
+        validation_results = []
+
+        missing = [
+            col
+            for col in required_columns
+            if col not in df.columns
+        ]
+
+        validation_results.append(
+            {
+                "Validasi": "Kolom Wajib",
+                "Status": (
+                    "OK"
+                    if not missing
+                    else "ERROR"
+                ),
+                "Keterangan": (
+                    "Semua kolom tersedia"
+                    if not missing
+                    else
+                    "Missing: "
+                    + ", ".join(missing)
+                ),
+            }
+        )
+
+        # -------------------------------------------------
+        # DATA KOSONG
+        # -------------------------------------------------
+
+        blank_count = 0
+
+        if not missing:
+
+            blank_mask = (
+                df[
+                    [
+                        "Bulan",
+                        "Nama Barang",
+                        "Satuan",
+                        "OUT BBB",
+                        "OUT BBT",
+                    ]
+                ]
+                .isna()
+                .any(axis=1)
+            )
+
+            blank_count = int(
+                blank_mask.sum()
+            )
+
+            for col in [
+                "Bulan",
+                "Nama Barang",
+                "Satuan",
+            ]:
+
+                blank_count += int(
+                    df[col]
+                    .astype(str)
+                    .str.strip()
+                    .eq("")
+                    .sum()
+                )
+
+        validation_results.append(
+            {
+                "Validasi": "Data Kosong",
+                "Status": (
+                    "OK"
+                    if blank_count == 0
+                    else "ERROR"
+                ),
+                "Keterangan": (
+                    "Tidak ada data kosong"
+                    if blank_count == 0
+                    else
+                    f"{blank_count} data kosong"
+                ),
+            }
+        )
+
+        # -------------------------------------------------
+        # NILAI NUMERIK
+        # -------------------------------------------------
+
+        numeric_error = 0
+
+        if not missing:
+
+            for col in [
+                "OUT BBB",
+                "OUT BBT",
+            ]:
+
+                converted = pd.to_numeric(
+                    df[col],
+                    errors="coerce",
+                )
+
+                numeric_error += int(
+                    converted.isna().sum()
+                )
+
+        validation_results.append(
+            {
+                "Validasi": "Nilai OUT",
+                "Status": (
+                    "OK"
+                    if numeric_error == 0
+                    else "ERROR"
+                ),
+                "Keterangan": (
+                    "Nilai numerik valid"
+                    if numeric_error == 0
+                    else
+                    f"{numeric_error} nilai tidak valid"
+                ),
+            }
+        )
+
+        # -------------------------------------------------
+        # NILAI NEGATIF
+        # -------------------------------------------------
+
+        negative_count = 0
+
+        if not missing:
+
+            for col in [
+                "OUT BBB",
+                "OUT BBT",
+            ]:
+
+                numeric = pd.to_numeric(
+                    df[col],
+                    errors="coerce",
+                )
+
+                negative_count += int(
+                    (numeric < 0)
+                    .fillna(False)
+                    .sum()
+                )
+
+        validation_results.append(
+            {
+                "Validasi": "Nilai Negatif",
+                "Status": (
+                    "OK"
+                    if negative_count == 0
+                    else "ERROR"
+                ),
+                "Keterangan": (
+                    "Tidak ada nilai negatif"
+                    if negative_count == 0
+                    else
+                    f"{negative_count} nilai negatif"
+                ),
+            }
+        )
+
+        # -------------------------------------------------
+        # DUPLIKAT
+        # -------------------------------------------------
+
+        duplicate_count = 0
+
+        if not missing:
+
+            duplicate_count = int(
+                df.duplicated(
+                    subset=[
+                        "Bulan",
+                        "Nama Barang",
+                        "Satuan",
+                    ],
+                    keep=False,
+                ).sum()
+            )
+
+        validation_results.append(
+            {
+                "Validasi": "Data Duplikat",
+                "Status": (
+                    "OK"
+                    if duplicate_count == 0
+                    else "WARNING"
+                ),
+                "Keterangan": (
+                    "Tidak ada duplikat"
+                    if duplicate_count == 0
+                    else
+                    f"{duplicate_count} baris terindikasi duplikat"
+                ),
+            }
+        )
+
+        # -------------------------------------------------
+        # PERIODE
+        # -------------------------------------------------
+
+        invalid_period_count = 0
+
+        if "Bulan" in df.columns:
+
+            forecast_date = get_forecast_date()
+
+            parsed_periods = df["Bulan"].apply(
+                lambda x: parse_period(
+                    x,
+                    default_year=forecast_date.year,
+                )
+            )
+
+            invalid_period_count = int(
+                parsed_periods.isna().sum()
+            )
+
+        validation_results.append(
+            {
+                "Validasi": "Format Periode",
+                "Status": (
+                    "OK"
+                    if invalid_period_count == 0
+                    else "ERROR"
+                ),
+                "Keterangan": (
+                    "Semua periode dapat dibaca"
+                    if invalid_period_count == 0
+                    else
+                    f"{invalid_period_count} periode tidak dapat dibaca"
+                ),
+            }
+        )
+
+        # -------------------------------------------------
+        # PERIODE HISTORI
+        # -------------------------------------------------
+
+        available_history = (
+            get_available_history(df)
+        )
+
+        history_required = int(
+            st.session_state.forecast_setting[
+                "history_months"
+            ]
+        )
+
+        if len(available_history) >= history_required:
+
+            history_status = "OK"
+
+            history_description = (
+                f"Tersedia {len(available_history)} bulan "
+                f"histori, membutuhkan {history_required} bulan"
+            )
+
+        elif len(available_history) > 0:
+
+            history_status = "ERROR"
+
+            history_description = (
+                f"Hanya tersedia {len(available_history)} bulan "
+                f"histori, membutuhkan {history_required} bulan"
+            )
+
+        else:
+
+            history_status = "ERROR"
+
+            history_description = (
+                "Tidak ada histori sebelum periode forecast"
+            )
+
+        validation_results.append(
+            {
+                "Validasi": "Ketersediaan Histori",
+                "Status": history_status,
+                "Keterangan": history_description,
+            }
+        )
+
+        validation_df = pd.DataFrame(
+            validation_results
+        )
+
+        st.dataframe(
+            validation_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # -------------------------------------------------
+        # STATUS DATA
+        # -------------------------------------------------
+
+        critical_statuses = [
+            row["Status"]
+            for row in validation_results
+            if row["Validasi"] != "Data Duplikat"
+        ]
+
+        critical_ok = all(
+            status == "OK"
+            for status in critical_statuses
+        )
+
+        if critical_ok:
+
+            st.session_state.data_valid = True
+
+            st.success(
+                "Data siap digunakan untuk forecasting."
+            )
+
+        else:
+
+            st.session_state.data_valid = False
+
+            st.error(
+                "Masih terdapat masalah pada data. "
+                "Perbaiki validasi ERROR sebelum forecasting."
+            )
+
+        if duplicate_count > 0:
+
+            st.warning(
+                "Terdapat data duplikat. "
+                "Duplikat akan tetap diagregasi berdasarkan "
+                "Bulan + Nama Barang + Satuan saat forecasting."
+            )
+
+
+# =========================================================
+# FORECAST
+# =========================================================
+
+elif menu == "🔮 Forecast":
+
+    st.markdown(
+        '<div class="section-title">🔮 Forecasting</div>',
+        unsafe_allow_html=True,
+    )
+
+    df = st.session_state.data_out
+
+    setting = (
+        st.session_state.forecast_setting
+    )
+
+    period_text = forecast_period_text()
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+
+        st.markdown(
+            "### Periode Forecast"
+        )
+
+        st.info(
+            f"**{period_text}**"
+        )
+
+    with c2:
+
+        st.markdown(
+            "### Histori Digunakan"
+        )
+
+        st.info(
+            f"**{setting['history_months']} bulan**"
+        )
+
+    st.divider()
+
+    if df.empty:
+
+        st.warning(
+            "Belum ada Data OUT."
+        )
+
+    else:
+
+        available_history = (
+            get_available_history(df)
+        )
+
+        if available_history:
+
+            selected_history_months = (
+                available_history[
+                    -setting["history_months"]:]
+            )
+
+            history_text = ", ".join(
+                [
+                    f"{BULAN[x.month]} {x.year}"
+                    for x in selected_history_months
+                ]
+            )
+
+            if len(available_history) >= setting["history_months"]:
+
+                st.info(
+                    "Histori yang akan digunakan: "
+                    f"**{history_text}**"
+                )
+
+            else:
+
+                st.error(
+                    "Histori yang tersedia hanya: "
+                    f"**{history_text}**. "
+                    f"Setting membutuhkan "
+                    f"**{setting['history_months']} bulan**."
+                )
+
+        else:
+
+            st.error(
+                "Histori sebelum periode forecast "
+                "belum ditemukan."
+            )
+
+        # -------------------------------------------------
+        # XGBOOST INFORMATION
+        # -------------------------------------------------
+
+        history_count = len(
+            available_history
+        )
+
+        if not XGBOOST_AVAILABLE:
+
+            st.warning(
+                "⚠️ **XGBoost belum tersedia.** "
+                "Package XGBoost belum ter-install sehingga "
+                "sistem hanya menggunakan metode forecasting "
+                "yang tersedia seperti MA/WMA."
+            )
+
+        elif history_count < XGBOOST_MIN_HISTORY:
+
+            st.warning(
+                "⚠️ **XGBoost tidak digunakan untuk histori ini.** "
+                f"Histori tersedia {history_count} bulan, "
+                f"sedangkan XGBoost membutuhkan minimal "
+                f"{XGBOOST_MIN_HISTORY} bulan histori agar "
+                "training dan backtesting lebih layak. "
+                "Sistem tetap menggunakan metode statistik "
+                "yang sesuai dengan jumlah histori."
+            )
+
+        else:
+
+            st.success(
+                "🤖 **XGBoost tersedia.** "
+                f"Histori tersedia {history_count} bulan "
+                f"dan sudah memenuhi minimum "
+                f"{XGBOOST_MIN_HISTORY} bulan. "
+                "XGBoost dapat ikut dibandingkan dengan "
+                "MA/WMA melalui backtesting."
+            )
+
+        # -------------------------------------------------
+        # VALIDATION STATUS
+        # -------------------------------------------------
+
+        if not st.session_state.data_valid:
+
+            st.warning(
+                "⚠️ Data belum divalidasi. "
+                "Buka menu **Validasi** dan pastikan "
+                "tidak ada ERROR sebelum menjalankan forecast."
+            )
+
+        # -------------------------------------------------
+        # RUN FORECAST
+        # -------------------------------------------------
+
+        if st.button(
+            "🚀 Jalankan Forecast",
+            type="primary",
+            use_container_width=True,
+            key="run_forecast_button",
+        ):
+
+            if not st.session_state.data_valid:
+
+                st.error(
+                    "Forecast tidak dapat dijalankan. "
+                    "Silakan selesaikan Validasi Data terlebih dahulu."
+                )
+
+            elif not available_history:
+
+                st.error(
+                    "Tidak ada histori yang tersedia "
+                    "sebelum periode forecast."
+                )
+
+            elif len(available_history) < setting["history_months"]:
+
+                st.error(
+                    f"Histori tersedia hanya "
+                    f"{len(available_history)} bulan, "
+                    f"sedangkan setting membutuhkan "
+                    f"{setting['history_months']} bulan."
+                )
+
+            else:
+
+                try:
+
+                    with st.spinner(
+                        "Sedang menghitung forecasting..."
+                    ):
+
+                        (
+                            df_bbb,
+                            df_bbt,
+                            summary,
+                        ) = run_forecasting(
+                            df=df,
+                            forecast_period=period_text,
+                            history_months=setting[
+                                "history_months"
+                            ],
+                        )
+
+                    st.session_state.forecast_bbb = (
+                        df_bbb
+                    )
+
+                    st.session_state.forecast_bbt = (
+                        df_bbt
+                    )
+
+                    st.session_state.forecast_summary = (
+                        summary
+                    )
+
+                    st.session_state.forecast_loaded = (
+                        True
+                    )
+
+                    st.session_state.loaded_history_id = (
+                        None
+                    )
+
+                    st.session_state.loaded_forecast_info = (
+                        None
+                    )
+
+                    st.session_state.last_forecast_period = (
+                        period_text
+                    )
+
+                    st.session_state.last_forecast_history_months = (
+                        int(
+                            setting["history_months"]
+                        )
+                    )
+
+                    st.success(
+                        "Forecast berhasil dihitung."
+                    )
+
+                except Exception as e:
+
+                    st.error(
+                        f"Forecast gagal dijalankan: {e}"
+                    )
+
+    # -----------------------------------------------------
+    # RESULT
+    # -----------------------------------------------------
+
+    df_bbb = (
+        st.session_state.forecast_bbb
+    )
+
+    df_bbt = (
+        st.session_state.forecast_bbt
+    )
+
+    if (
+        not df_bbb.empty
+        or not df_bbt.empty
+    ):
+
+        st.divider()
+
+        st.markdown(
+            "### Hasil Forecast"
+        )
+
+        # -------------------------------------------------
+        # CHECK CURRENT SETTING
+        # -------------------------------------------------
+
+        if not forecast_matches_current_setting():
+
+            st.warning(
+                "Hasil forecast yang tampil bukan hasil "
+                "dari setting periode saat ini. "
+                "Jalankan forecast kembali."
+            )
+
+        tab1, tab2 = st.tabs(
+            [
+                "📦 BBB",
+                "📦 BBT",
+            ]
+        )
+
+        with tab1:
+
+            if df_bbb.empty:
+
+                st.info(
+                    "Tidak ada hasil forecast BBB."
+                )
+
+            else:
+
+                display_df = df_bbb.copy()
+
+                if "WAPE" in display_df.columns:
+
+                    display_df["WAPE"] = (
+                        pd.to_numeric(
+                            display_df["WAPE"],
+                            errors="coerce",
+                        )
+                        .apply(
+                            format_percent
+                        )
+                    )
+
+                if "Forecast" in display_df.columns:
+
+                    display_df["Forecast"] = (
+                        pd.to_numeric(
+                            display_df["Forecast"],
+                            errors="coerce",
+                        )
+                        .apply(
+                            format_number
+                        )
+                    )
+
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        with tab2:
+
+            if df_bbt.empty:
+
+                st.info(
+                    "Tidak ada hasil forecast BBT."
+                )
+
+            else:
+
+                display_df = df_bbt.copy()
+
+                if "WAPE" in display_df.columns:
+
+                    display_df["WAPE"] = (
+                        pd.to_numeric(
+                            display_df["WAPE"],
+                            errors="coerce",
+                        )
+                        .apply(
+                            format_percent
+                        )
+                    )
+
+                if "Forecast" in display_df.columns:
+
+                    display_df["Forecast"] = (
+                        pd.to_numeric(
+                            display_df["Forecast"],
+                            errors="coerce",
+                        )
+                        .apply(
+                            format_number
+                        )
+
+                    )
+
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        # -------------------------------------------------
+        # BEST METHOD SUMMARY
+        # -------------------------------------------------
+
+        summary = (
+            st.session_state.forecast_summary
+        )
+
+        summary_bbb = summary.get(
+            "bbb",
+            {},
+        )
+
+        summary_bbt = summary.get(
+            "bbt",
+            {},
+        )
+
+        st.divider()
+
+        st.markdown(
+            "### Metode Terbaik"
+        )
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+
+            method_bbb = summary_bbb.get(
+                "best_method"
+            )
+
+            if method_bbb:
+
+                st.success(
+                    f"**BBB:** {method_bbb}"
+                )
+
+            else:
+
+                st.info(
+                    "Metode terbaik BBB belum tersedia."
+                )
+
+        with c2:
+
+            method_bbt = summary_bbt.get(
+                "best_method"
+            )
+
+            if method_bbt:
+
+                st.success(
+                    f"**BBT:** {method_bbt}"
+                )
+
+            else:
+
+                st.info(
+                    "Metode terbaik BBT belum tersedia."
+                )
+
+        # -------------------------------------------------
+        # SAVE FORECAST
+        # -------------------------------------------------
+
+        st.divider()
+
+        st.markdown(
+            "### Simpan Forecast"
+        )
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+
+            nama_user = st.text_input(
+                "Nama User",
+                placeholder="Masukkan nama user",
+                key="nama_user_forecast",
+            )
+
+        with c2:
+
+            st.text_input(
+                "Periode Forecast",
+                value=period_text,
+                disabled=True,
+                key="periode_forecast_display",
+            )
+
+        if st.button(
+            "💾 Simpan Forecast",
+            type="primary",
+            key="save_forecast_button",
+        ):
+
+            if not nama_user.strip():
+
+                st.warning(
+                    "Nama User wajib diisi."
+                )
+
+            elif not forecast_matches_current_setting():
+
+                st.error(
+                    "Hasil forecast tidak sesuai dengan "
+                    "setting periode saat ini. "
+                    "Silakan jalankan forecast kembali."
+                )
+
+            else:
+
+                try:
+
+                    history_id = save_history(
+                        nama_user=nama_user.strip(),
+                        periode_forecast=period_text,
+                        history_months=setting[
+                            "history_months"
+                        ],
+                        forecast_bbb=df_bbb,
+                        forecast_bbt=df_bbt,
+                        summary=(
+                            st.session_state
+                            .forecast_summary
+                        ),
+                    )
+
+                    st.session_state.loaded_history_id = (
+                        history_id
+                    )
+
+                    st.session_state.forecast_loaded = (
+                        True
+                    )
+
+                    st.session_state.loaded_forecast_info = {
+                        "id": history_id,
+                        "nama_user": nama_user.strip(),
+                        "periode_forecast": period_text,
+                        "history_months": setting[
+                            "history_months"
+                        ],
+                        "created_at": "Baru saja",
+                    }
+
+                    st.session_state.last_forecast_period = (
+                        period_text
+                    )
+
+                    st.session_state.last_forecast_history_months = (
+                        int(
+                            setting["history_months"]
+                        )
+                    )
+
+                    st.success(
+                        f"Forecast {period_text} "
+                        "berhasil disimpan."
+                    )
+
+                except Exception as e:
+
+                    st.error(
+                        f"Gagal menyimpan forecast: {e}"
+                    )
+
+
+# =========================================================
+# HISTORY
+# =========================================================
+
+elif menu == "🕘 History":
+
+    st.markdown(
+        '<div class="section-title">🕘 History Forecast</div>',
+        unsafe_allow_html=True,
+    )
+
+    histories = load_history()
+
+    if not histories:
+
+        st.info(
+            "Belum ada history forecasting."
+        )
+
+    else:
+
+        # -------------------------------------------------
+        # TABLE
+        # -------------------------------------------------
+
+        history_data = []
+
+        for row in histories:
+
+            history_data.append(
+                {
+                    "ID": row["id"],
+                    "Nama User": row["nama_user"],
+                    "Periode Forecast": row[
+                        "periode_forecast"
+                    ],
+                    "Histori": row[
+                        "history_months"
+                    ],
+                    "Tanggal Simpan": row[
+                        "created_at"
+                    ],
+                    "Status": row[
+                        "status"
+                    ],
+                }
+            )
+
+        history_df = pd.DataFrame(
+            history_data
+        )
+
+        st.dataframe(
+            history_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.divider()
+
+        # -------------------------------------------------
+        # SELECT
+        # -------------------------------------------------
+
+        history_ids = [
+            row["id"]
+            for row in histories
+        ]
+
+        selected_id = st.selectbox(
+            "Pilih History",
+            history_ids,
+            key="history_select",
+        )
+
+        selected_row = next(
+            (
+                row
+                for row in histories
+                if row["id"] == selected_id
+            ),
+            None,
+        )
+
+        if selected_row:
+
+            st.info(
+                f"Forecast "
+                f"{selected_row['periode_forecast']} "
+                f"— "
+                f"{selected_row['nama_user']}"
+            )
+
+            c1, c2 = st.columns(2)
+
+            # -------------------------------------------------
+            # LOAD
+            # -------------------------------------------------
+
+            with c1:
+
+                if st.button(
+                    "📂 Load History",
+                    use_container_width=True,
+                    key="history_load_button",
+                ):
+
+                    success, message = (
+                        load_forecast_to_session(
+                            selected_id
+                        )
+                    )
+
+                    if success:
+
+                        st.query_params["menu"] = (
+                            "dashboard"
+                        )
+
+                        st.success(
+                            message
+                        )
+
+                        st.rerun()
+
+                    else:
+
+                        st.error(
+                            message
+                        )
+
+            # -------------------------------------------------
+            # DELETE
+            # -------------------------------------------------
+
+            with c2:
+
+                if st.button(
+                    "🗑️ Hapus History",
+                    use_container_width=True,
+                    key="history_delete_button",
+                ):
+
+                    st.session_state[
+                        "confirm_delete_history"
+                    ] = selected_id
+
+                    st.rerun()
+
+            # -------------------------------------------------
+            # DELETE CONFIRMATION
+            # -------------------------------------------------
+
+            if (
+                st.session_state.get(
+                    "confirm_delete_history"
+                )
+                == selected_id
+            ):
+
+                st.warning(
+                    "Apakah Anda yakin ingin "
+                    "menghapus data forecasting ini?"
+                )
+
+                c1, c2 = st.columns(2)
+
+                with c1:
+
+                    if st.button(
+                        "Batal",
+                        use_container_width=True,
+                        key="cancel_delete_history",
+                    ):
+
+                        st.session_state[
+                            "confirm_delete_history"
+                        ] = None
+
+                        st.rerun()
+
+                with c2:
+
+                    if st.button(
+                        "Hapus",
+                        type="primary",
+                        use_container_width=True,
+                        key="confirm_delete_history_button",
+                    ):
+
+                        delete_history(
+                            selected_id
+                        )
+
+                        st.session_state[
+                            "confirm_delete_history"
+                        ] = None
+
+                        if (
+                            st.session_state
+                            .loaded_history_id
+                            == selected_id
+                        ):
+
+                            reset_forecast_session()
+
+                        st.success(
+                            "History berhasil dihapus."
+                        )
+
+                        st.rerun()
+
+        st.divider()
+
+        # -------------------------------------------------
+        # DELETE ALL
+        # -------------------------------------------------
+
+        if st.button(
+            "🗑️ Hapus Semua History",
+            key="delete_all_history_button",
+        ):
+
+            st.session_state[
+                "confirm_delete_all"
+            ] = True
+
+            st.rerun()
+
+        if st.session_state.get(
+            "confirm_delete_all",
+            False,
+        ):
+
+            st.warning(
+                "Apakah Anda yakin ingin "
+                "menghapus SEMUA history forecasting?"
+            )
+
+            c1, c2 = st.columns(2)
+
+            with c1:
+
+                if st.button(
+                    "Batal",
+                    key="cancel_delete_all",
+                    use_container_width=True,
+                ):
+
+                    st.session_state[
+                        "confirm_delete_all"
+                    ] = False
+
+                    st.rerun()
+
+            with c2:
+
+                if st.button(
+                    "Hapus Semua",
+                    key="confirm_delete_all_button",
+                    type="primary",
+                    use_container_width=True,
+                ):
+
+                    delete_all_history()
+
+                    st.session_state[
+                        "confirm_delete_all"
+                    ] = False
+
+                    reset_forecast_session()
+
+                    st.success(
+                        "Semua history berhasil dihapus."
+                    )
+
+                    st.rerun()
+
+
+# =========================================================
+# FOOTER
+# =========================================================
+
+st.markdown(
+    """
+    <div class="footer">
+        © Demand Planner Main Warehouse Batu Ceper
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
