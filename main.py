@@ -2283,12 +2283,31 @@ initial_index = MENU_OPTIONS.index(
 )
 
 
+# Simpan menu sebelumnya supaya dialog bantuan tidak pernah
+# terbuka otomatis hanya karena pengguna berpindah menu.
+_previous_menu = st.session_state.get(
+    "_previous_sidebar_menu",
+    initial_menu,
+)
+
+
 menu = st.sidebar.radio(
     "MENU",
     MENU_OPTIONS,
     index=initial_index,
     key="sidebar_menu",
 )
+
+
+# Jika pengguna berpindah menu, bantuan yang sedang terbuka
+# langsung ditutup. Bantuan hanya boleh muncul setelah pengguna
+# menekan tombol bantuan secara eksplisit.
+if menu != _previous_menu:
+    st.session_state.show_help = False
+    st.session_state.help_page = 1
+
+
+st.session_state._previous_sidebar_menu = menu
 
 
 # Update URL sesuai menu yang dipilih
