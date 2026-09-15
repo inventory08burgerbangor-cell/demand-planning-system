@@ -138,8 +138,20 @@ if "forecast_setting" not in st.session_state:
     st.session_state.forecast_setting = {
         "month": 9,
         "year": 2026,
-        "history_months": 3,
+        # DEFAULT REVISI: gunakan 8 bulan histori.
+        # Jika data tersedia kurang dari 8 bulan, validasi akan
+        # memberitahu jumlah histori yang benar-benar tersedia.
+        "history_months": 8,
+        # CATATAN REVISI: True = gunakan seluruh histori sebelum forecast.
+        "use_all_history": False,
     }
+
+# Kompatibilitas session state dari versi sebelum mode semua histori.
+if "use_all_history" not in st.session_state.forecast_setting:
+
+    st.session_state.forecast_setting[
+        "use_all_history"
+    ] = False
 
 
 if "data_out" not in st.session_state:
@@ -676,6 +688,58 @@ def get_available_history(df):
 # CHECK FORECAST STATUS
 # =========================================================
 
+def get_history_mode(setting):
+
+    """Mengembalikan True jika setting menggunakan seluruh histori."""
+
+    if not isinstance(setting, dict):
+        return False
+
+    return bool(
+        setting.get(
+            "use_all_history",
+            False,
+        )
+    )
+
+
+def get_effective_history_months(
+    setting,
+    available_history=None,
+):
+
+    """Menentukan jumlah histori efektif yang digunakan."""
+
+    if get_history_mode(setting):
+
+        if available_history is not None:
+            return len(available_history)
+
+        return None
+
+    try:
+        value = int(
+            setting.get(
+                "history_months",
+                8,
+            )
+        )
+    except Exception:
+        value = 8
+
+    return max(1, value)
+
+
+def get_forecast_history_parameter(setting):
+
+    """Parameter history_months yang dikirim ke forecasting.py."""
+
+    if get_history_mode(setting):
+        return None
+
+    return get_effective_history_months(setting)
+
+
 def forecast_matches_current_setting():
 
     if not st.session_state.forecast_loaded:
@@ -683,10 +747,15 @@ def forecast_matches_current_setting():
 
     current_period = forecast_period_text()
 
-    current_history = int(
-        st.session_state.forecast_setting[
-            "history_months"
-        ]
+    setting = st.session_state.forecast_setting
+
+    available_history = get_available_history(
+        st.session_state.data_out
+    )
+
+    current_history = get_effective_history_months(
+        setting,
+        available_history,
     )
 
     last_period = (
@@ -897,6 +966,9 @@ def load_forecast_to_session(history_id):
                 record["history_months"]
                 or 3
             ),
+            # Database lama tidak menyimpan mode semua histori.
+            # Nilai yang tersimpan adalah jumlah histori aktual.
+            "use_all_history": False,
         }
 
         st.session_state.last_forecast_period = (
@@ -2678,16 +2750,36 @@ elif menu == "⚙️ Setting":
 
     with col3:
 
+        # REVISI HISTORI:
+        # Maksimum diperbesar agar dataset dengan histori panjang
+        # tidak terpaksa dipotong hanya 24 bulan dari sisi UI.
         selected_history = st.number_input(
-            "Periode Histori",
+            "Periode Histori (bulan)",
             min_value=1,
-            max_value=24,
+            max_value=120,
             value=int(
                 current["history_months"]
             ),
             step=1,
             key="setting_history",
         )
+
+        selected_all_history = st.checkbox(
+            "Gunakan semua histori tersedia",
+            value=get_history_mode(current),
+            key="setting_all_history",
+            help=(
+                "Jika aktif, sistem menggunakan seluruh histori "
+                "yang tersedia sebelum periode forecast."
+            ),
+        )
+
+        if selected_all_history:
+
+            st.caption(
+                "✓ Mode semua histori aktif. Nilai periode bulan "
+                "di atas tidak membatasi histori yang digunakan."
+            )
 
     if st.button(
         "💾 Simpan Setting",
@@ -2704,6 +2796,9 @@ elif menu == "⚙️ Setting":
             "year": selected_year,
             "history_months": int(
                 selected_history
+            ),
+            "use_all_history": bool(
+                selected_all_history
             ),
         }
 
@@ -2748,12 +2843,24 @@ elif menu == "⚙️ Setting":
                 "Nilai": [
                     BULAN[setting["month"]],
                     setting["year"],
-                    setting["history_months"],
+                    (
+                        "Semua histori tersedia"
+                        if get_history_mode(setting)
+                        else setting["history_months"]
+                    ),
                 ],
             }
         ),
         use_container_width=True,
         hide_index=True,
+    )
+
+    st.info(
+        "💡 Rekomendasi: aktifkan **Gunakan semua histori tersedia** "
+        "untuk mengambil seluruh bulan sebelum periode forecast. "
+        "Jika mode manual digunakan dan tersedia 8 bulan histori, "
+        "gunakan **Periode Histori = 8**. Forecast tetap hanya "
+        "mengambil data sebelum periode forecast."
     )
 
 
@@ -3033,13 +3140,36 @@ elif menu == "✅ Validasi":
             get_available_history(df)
         )
 
-        history_required = int(
-            st.session_state.forecast_setting[
-                "history_months"
-            ]
+        current_setting = (
+            st.session_state.forecast_setting
         )
 
-        if len(available_history) >= history_required:
+        history_required = get_effective_history_months(
+            current_setting,
+            available_history,
+        )
+
+        if get_history_mode(current_setting):
+
+            if len(available_history) > 0:
+
+                history_status = "OK"
+
+                history_description = (
+                    f"Tersedia {len(available_history)} bulan histori "
+                    "dan mode semua histori aktif; seluruh histori "
+                    "sebelum periode forecast akan digunakan"
+                )
+
+            else:
+
+                history_status = "ERROR"
+
+                history_description = (
+                    "Tidak ada histori sebelum periode forecast"
+                )
+
+        elif len(available_history) >= history_required:
 
             history_status = "OK"
 
@@ -3161,8 +3291,31 @@ elif menu == "🔮 Forecast":
             "### Histori Digunakan"
         )
 
+        effective_history = get_effective_history_months(
+            setting,
+            get_available_history(df),
+        )
+
+        if get_history_mode(setting):
+
+            history_label = (
+                f"Semua histori tersedia ({effective_history} bulan)"
+            )
+
+        else:
+
+            history_label = (
+                f"{effective_history} bulan"
+            )
+
         st.info(
-            f"**{setting['history_months']} bulan**"
+            f"**{history_label}**"
+        )
+
+        st.caption(
+            "Histori diambil dari periode yang tersedia sebelum "
+            "bulan forecast. Mode semua histori menggunakan seluruh "
+            "bulan yang tersedia; mode manual mengikuti setting."
         )
 
     st.divider()
@@ -3181,9 +3334,15 @@ elif menu == "🔮 Forecast":
 
         if available_history:
 
+            effective_history = get_effective_history_months(
+                setting,
+                available_history,
+            )
+
             selected_history_months = (
-                available_history[
-                    -setting["history_months"]:]
+                available_history
+                if get_history_mode(setting)
+                else available_history[-effective_history:]
             )
 
             history_text = ", ".join(
@@ -3193,12 +3352,30 @@ elif menu == "🔮 Forecast":
                 ]
             )
 
-            if len(available_history) >= setting["history_months"]:
+            effective_history = get_effective_history_months(
+                setting,
+                available_history,
+            )
+
+            if get_history_mode(setting):
+
+                st.info(
+                    "Histori yang akan digunakan "
+                    "(semua histori tersedia): "
+                    f"**{history_text}**"
+                )
+
+            elif len(available_history) >= effective_history:
 
                 st.info(
                     "Histori yang akan digunakan: "
                     f"**{history_text}**"
                 )
+
+                # Catatan: forecast untuk bulan berikutnya akan
+                # otomatis memakai histori sampai bulan terakhir
+                # sebelum forecast. Jadi, misalnya forecast November,
+                # data Oktober ikut masuk selama Oktober tersedia.
 
             else:
 
@@ -3206,7 +3383,7 @@ elif menu == "🔮 Forecast":
                     "Histori yang tersedia hanya: "
                     f"**{history_text}**. "
                     f"Setting membutuhkan "
-                    f"**{setting['history_months']} bulan**."
+                    f"**{effective_history} bulan**."
                 )
 
         else:
@@ -3293,13 +3470,24 @@ elif menu == "🔮 Forecast":
                     "sebelum periode forecast."
                 )
 
-            elif len(available_history) < setting["history_months"]:
+            elif (
+                not get_history_mode(setting)
+                and len(available_history) < get_effective_history_months(
+                    setting,
+                    available_history,
+                )
+            ):
+
+                effective_history = get_effective_history_months(
+                    setting,
+                    available_history,
+                )
 
                 st.error(
                     f"Histori tersedia hanya "
                     f"{len(available_history)} bulan, "
                     f"sedangkan setting membutuhkan "
-                    f"{setting['history_months']} bulan."
+                    f"{effective_history} bulan."
                 )
 
             else:
@@ -3317,9 +3505,9 @@ elif menu == "🔮 Forecast":
                         ) = run_forecasting(
                             df=df,
                             forecast_period=period_text,
-                            history_months=setting[
-                                "history_months"
-                            ],
+                            history_months=get_forecast_history_parameter(
+                                setting
+                            ),
                         )
 
                     st.session_state.forecast_bbb = (
@@ -3351,8 +3539,9 @@ elif menu == "🔮 Forecast":
                     )
 
                     st.session_state.last_forecast_history_months = (
-                        int(
-                            setting["history_months"]
+                        get_effective_history_months(
+                            setting,
+                            available_history,
                         )
                     )
 
@@ -3611,9 +3800,11 @@ elif menu == "🔮 Forecast":
                     history_id = save_history(
                         nama_user=nama_user.strip(),
                         periode_forecast=period_text,
-                        history_months=setting[
-                            "history_months"
-                        ],
+                        # Database menyimpan jumlah histori aktual.
+                        history_months=get_effective_history_months(
+                            setting,
+                            get_available_history(df),
+                        ),
                         forecast_bbb=df_bbb,
                         forecast_bbt=df_bbt,
                         summary=(
@@ -3634,9 +3825,10 @@ elif menu == "🔮 Forecast":
                         "id": history_id,
                         "nama_user": nama_user.strip(),
                         "periode_forecast": period_text,
-                        "history_months": setting[
-                            "history_months"
-                        ],
+                        "history_months": get_effective_history_months(
+                            setting,
+                            get_available_history(df),
+                        ),
                         "created_at": "Baru saja",
                     }
 
@@ -3645,8 +3837,9 @@ elif menu == "🔮 Forecast":
                     )
 
                     st.session_state.last_forecast_history_months = (
-                        int(
-                            setting["history_months"]
+                        get_effective_history_months(
+                            setting,
+                            get_available_history(df),
                         )
                     )
 

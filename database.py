@@ -26,6 +26,152 @@ def get_connection():
 
 
 # =========================================================
+# HISTORY MONTHS HELPER
+# =========================================================
+#
+# CATATAN REVISI:
+#
+# forecasting.py menggunakan:
+#
+#     None
+#     ""
+#     "all"
+#     "semua"
+#     0
+#
+# sebagai penanda "gunakan semua histori".
+#
+# Database sebaiknya TIDAK menyimpan sentinel tersebut.
+# Database menyimpan JUMLAH HISTORI AKTUAL yang dipakai,
+# misalnya 8, 10, 12, dst.
+#
+# Karena itu helper di bawah hanya melakukan normalisasi
+# nilai yang masuk ke database.
+# =========================================================
+
+def normalize_history_months(
+    history_months,
+    default=3,
+    allow_all=False,
+):
+
+    # -----------------------------------------------------
+    # Nilai kosong
+    # -----------------------------------------------------
+
+    if history_months is None:
+
+        if allow_all:
+
+            return None
+
+        return int(
+            default
+        )
+
+    # -----------------------------------------------------
+    # String
+    # -----------------------------------------------------
+
+    if isinstance(
+        history_months,
+        str,
+    ):
+
+        value = (
+            history_months
+            .strip()
+            .lower()
+        )
+
+        # -------------------------------------------------
+        # Mode semua histori
+        # -------------------------------------------------
+
+        if value in (
+            "",
+            "all",
+            "semua",
+            "semua histori",
+            "all history",
+        ):
+
+            if allow_all:
+
+                return None
+
+            return int(
+                default
+            )
+
+        # -------------------------------------------------
+        # Konversi angka
+        # -------------------------------------------------
+
+        try:
+
+            history_months = int(
+                float(value)
+            )
+
+        except Exception:
+
+            history_months = int(
+                default
+            )
+
+    # -----------------------------------------------------
+    # Numeric
+    # -----------------------------------------------------
+
+    try:
+
+        history_months = int(
+            history_months
+        )
+
+    except Exception:
+
+        history_months = int(
+            default
+        )
+
+    # -----------------------------------------------------
+    # Nilai <= 0
+    # -----------------------------------------------------
+    #
+    # Jika allow_all=True:
+    #     0 / negatif = semua histori
+    #
+    # Jika allow_all=False:
+    #     database tetap membutuhkan angka positif,
+    #     sehingga gunakan default.
+    # -----------------------------------------------------
+
+    if history_months <= 0:
+
+        if allow_all:
+
+            return None
+
+        history_months = int(
+            default
+        )
+
+    # -----------------------------------------------------
+    # Minimal 1 bulan
+    # -----------------------------------------------------
+
+    if history_months < 1:
+
+        history_months = 1
+
+    return int(
+        history_months
+    )
+
+
+# =========================================================
 # INIT DATABASE
 # =========================================================
 
@@ -123,6 +269,19 @@ def init_db():
                 {column_definition}
                 """
             )
+
+    # -----------------------------------------------------
+    # CATATAN REVISI:
+    #
+    # Tidak ada perubahan schema baru.
+    #
+    # history_months tetap INTEGER agar kompatibel dengan
+    # database lama dan dengan main.py yang sudah ada.
+    #
+    # Mode "semua histori" dihitung oleh main.py /
+    # forecasting.py, kemudian database menerima jumlah
+    # histori aktual yang digunakan.
+    # -----------------------------------------------------
 
     conn.commit()
 
@@ -313,20 +472,25 @@ def save_history(
         # -------------------------------------------------
         # VALIDASI HISTORY MONTHS
         # -------------------------------------------------
+        #
+        # CATATAN REVISI:
+        #
+        # save_history() menyimpan angka aktual.
+        # Jadi None / "all" tidak disimpan sebagai mode.
+        #
+        # Jika main.py mengirim jumlah histori aktual,
+        # misalnya 8, maka yang disimpan adalah 8.
+        #
+        # Untuk keamanan, nilai kosong / invalid tetap
+        # dikembalikan ke default 3 agar database lama
+        # tetap kompatibel.
+        # -----------------------------------------------------
 
-        try:
-
-            history_months = int(
-                history_months
-            )
-
-        except Exception:
-
-            history_months = 3
-
-        if history_months < 1:
-
-            history_months = 1
+        history_months = normalize_history_months(
+            history_months,
+            default=3,
+            allow_all=False,
+        )
 
         # -------------------------------------------------
         # DATAFRAME → JSON
@@ -548,28 +712,23 @@ def load_history_by_id(
         # -------------------------------------------------
         # History months
         # -------------------------------------------------
+        #
+        # CATATAN REVISI:
+        #
+        # Nilai yang dibaca dari database harus tetap berupa
+        # angka positif karena database menyimpan jumlah
+        # histori aktual yang digunakan.
+        # -----------------------------------------------------
 
         history_months = (
             row["history_months"]
         )
 
-        if history_months is None:
-
-            history_months = 3
-
-        try:
-
-            history_months = int(
-                history_months
-            )
-
-        except Exception:
-
-            history_months = 3
-
-        if history_months < 1:
-
-            history_months = 1
+        history_months = normalize_history_months(
+            history_months,
+            default=3,
+            allow_all=False,
+        )
 
         # -------------------------------------------------
         # Return

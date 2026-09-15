@@ -1,8 +1,7 @@
 # forecasting.py
 
-import calendar
 import re
-from typing import Optional, Tuple, Dict, List
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -26,10 +25,10 @@ except Exception:
 # CONFIG
 # =========================================================
 
-# XGBoost minimal 3 bulan histori
+# Minimum histori untuk XGBoost
 XGBOOST_MIN_HISTORY = 3
 
-# Minimum jumlah training row
+# Minimum jumlah training row XGBoost
 XGBOOST_MIN_TRAIN_SIZE = 1
 
 RANDOM_STATE = 42
@@ -123,14 +122,17 @@ MONTH_NAME_ID = {
 
 def _clean_text(value) -> str:
     """
-    Membersihkan text agar lebih aman untuk proses parsing.
+    Membersihkan text agar aman untuk parsing.
     """
 
     if value is None:
         return ""
 
-    if pd.isna(value):
-        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
 
     return str(value).strip()
 
@@ -141,7 +143,6 @@ def _safe_float(value, default=0.0) -> float:
     """
 
     try:
-
         if pd.isna(value):
             return float(default)
 
@@ -153,8 +154,63 @@ def _safe_float(value, default=0.0) -> float:
         return result
 
     except Exception:
-
         return float(default)
+
+
+def _normalize_history_months(history_months):
+    """
+    Normalisasi setting histori.
+
+    Aturan:
+
+        None / kosong / <= 0
+            -> None
+            -> gunakan SEMUA histori tersedia
+
+        > 0
+            -> gunakan maksimal sejumlah bulan tersebut
+
+    Contoh:
+
+        history_months = 3
+            -> maksimal 3 bulan
+
+        history_months = 8
+            -> maksimal 8 bulan
+
+        history_months = None
+            -> semua histori tersedia
+    """
+
+    if history_months is None:
+        return None
+
+    try:
+        if isinstance(history_months, str):
+            text = history_months.strip()
+
+            if text == "":
+                return None
+
+            # Support setting seperti:
+            # "all", "semua", "all history"
+            if text.lower() in {
+                "all",
+                "semua",
+                "semua histori",
+                "all history",
+            }:
+                return None
+
+        value = int(float(history_months))
+
+        if value <= 0:
+            return None
+
+        return value
+
+    except Exception:
+        return None
 
 
 # =========================================================
@@ -166,7 +222,7 @@ def parse_period(period, default_year=None):
     Mengubah berbagai format periode menjadi pandas Timestamp
     dengan tanggal selalu tanggal 1.
 
-    Contoh yang didukung:
+    Format yang didukung:
 
         Juni 2026
         September 2026
@@ -177,6 +233,7 @@ def parse_period(period, default_year=None):
         Timestamp
         datetime
         Juni + default_year
+        202606
     """
 
     if period is None:
@@ -197,7 +254,6 @@ def parse_period(period, default_year=None):
     if hasattr(period, "year") and hasattr(period, "month"):
 
         try:
-
             return pd.Timestamp(
                 year=int(period.year),
                 month=int(period.month),
@@ -208,7 +264,7 @@ def parse_period(period, default_year=None):
             pass
 
     # -----------------------------------------------------
-    # Numeric Excel-like date
+    # Numeric
     # -----------------------------------------------------
 
     if isinstance(
@@ -222,7 +278,39 @@ def parse_period(period, default_year=None):
     ):
 
         try:
+            numeric_value = float(period)
 
+            # Format YYYYMM
+            if numeric_value.is_integer():
+                numeric_text = str(
+                    int(numeric_value)
+                )
+
+                if re.fullmatch(
+                    r"\d{6}",
+                    numeric_text,
+                ):
+
+                    year = int(
+                        numeric_text[:4]
+                    )
+
+                    month = int(
+                        numeric_text[4:]
+                    )
+
+                    if (
+                        1900 <= year <= 2100
+                        and 1 <= month <= 12
+                    ):
+
+                        return pd.Timestamp(
+                            year=year,
+                            month=month,
+                            day=1,
+                        )
+
+            # Coba sebagai tanggal pandas
             parsed = pd.to_datetime(
                 period,
                 errors="coerce",
@@ -273,7 +361,10 @@ def parse_period(period, default_year=None):
         if token in MONTH_MAP:
             found_month = MONTH_MAP[token]
 
-        if token.isdigit() and len(token) == 4:
+        if (
+            token.isdigit()
+            and len(token) == 4
+        ):
             found_year = int(token)
 
     if found_month is not None:
@@ -286,7 +377,6 @@ def parse_period(period, default_year=None):
             found_year = int(default_year)
 
         try:
-
             return pd.Timestamp(
                 year=found_year,
                 month=found_month,
@@ -294,7 +384,6 @@ def parse_period(period, default_year=None):
             )
 
         except Exception:
-
             return None
 
     # -----------------------------------------------------
@@ -306,13 +395,20 @@ def parse_period(period, default_year=None):
         normalized,
     ):
 
-        year = int(normalized[:4])
-        month = int(normalized[4:])
+        year = int(
+            normalized[:4]
+        )
 
-        if 1 <= month <= 12:
+        month = int(
+            normalized[4:]
+        )
+
+        if (
+            1900 <= year <= 2100
+            and 1 <= month <= 12
+        ):
 
             try:
-
                 return pd.Timestamp(
                     year=year,
                     month=month,
@@ -418,7 +514,7 @@ def calculate_wape(actual, forecast) -> float:
              SUM |Actual|
 
     Jika tidak ada data valid:
-        return NaN
+        NaN
 
     Jika total actual = 0:
         error = 0 -> 0%
@@ -439,13 +535,11 @@ def calculate_wape(actual, forecast) -> float:
         actual_array.size == 0
         or forecast_array.size == 0
     ):
-
         return np.nan
 
     if actual_array.shape != forecast_array.shape:
 
         try:
-
             actual_array, forecast_array = (
                 np.broadcast_arrays(
                     actual_array,
@@ -454,7 +548,6 @@ def calculate_wape(actual, forecast) -> float:
             )
 
         except Exception:
-
             return np.nan
 
     mask = (
@@ -496,9 +589,6 @@ def calculate_wape(actual, forecast) -> float:
 def calculate_accuracy(wape: float) -> float:
     """
     Accuracy = 100% - WAPE.
-
-    Jika WAPE tidak tersedia:
-        return NaN
     """
 
     try:
@@ -506,7 +596,6 @@ def calculate_accuracy(wape: float) -> float:
         if not np.isfinite(
             float(wape)
         ):
-
             return np.nan
 
         return max(
@@ -515,7 +604,6 @@ def calculate_accuracy(wape: float) -> float:
         )
 
     except Exception:
-
         return np.nan
 
 
@@ -537,6 +625,9 @@ def moving_average(
     )
 
     if len(values) == 0:
+        return np.nan
+
+    if window <= 0:
         return np.nan
 
     if len(values) < window:
@@ -565,7 +656,7 @@ def weighted_moving_average(
 
     Data terbaru mendapatkan bobot terbesar.
 
-    Contoh window 3:
+    Window 3:
 
         oldest = 1
         middle = 2
@@ -580,8 +671,10 @@ def weighted_moving_average(
     if len(values) == 0:
         return np.nan
 
-    if len(values) < window:
+    if window <= 0:
+        return np.nan
 
+    if len(values) < window:
         window = len(values)
 
     if window <= 0:
@@ -607,9 +700,7 @@ def weighted_moving_average(
 # XGBOOST FEATURE ENGINEERING
 # =========================================================
 
-def create_xgboost_training_data(
-    values,
-):
+def create_xgboost_training_data(values):
     """
     Membuat feature training XGBoost.
 
@@ -623,17 +714,6 @@ def create_xgboost_training_data(
     Target:
 
         nilai bulan berikutnya.
-
-    Dengan histori minimal 3 bulan:
-
-        bulan 1
-        bulan 2
-        bulan 3
-
-    menghasilkan:
-
-        feature bulan 1-2
-        target bulan 3
     """
 
     values = np.asarray(
@@ -705,9 +785,7 @@ def create_xgboost_training_data(
     )
 
 
-def create_future_xgboost_features(
-    values,
-):
+def create_future_xgboost_features(values):
     """
     Membuat feature untuk prediksi
     periode berikutnya.
@@ -784,9 +862,7 @@ def build_xgboost_model():
 # XGBOOST FORECAST
 # =========================================================
 
-def xgboost_forecast(
-    values,
-) -> float:
+def xgboost_forecast(values) -> float:
     """
     Forecast 1 periode ke depan
     menggunakan XGBoost.
@@ -853,13 +929,11 @@ def xgboost_forecast(
         if not np.isfinite(
             prediction
         ):
-
             return np.nan
 
         return prediction
 
     except Exception:
-
         return np.nan
 
 
@@ -867,22 +941,12 @@ def xgboost_forecast(
 # XGBOOST BACKTEST
 # =========================================================
 
-def backtest_xgboost_details(
-    values,
-):
+def backtest_xgboost_details(values):
     """
     Walk-forward backtesting XGBoost
     tanpa data leakage.
 
-    Contoh histori 3 bulan:
-
-        Training:
-            bulan 1 -> target bulan 2
-
-        Testing:
-            prediksi bulan 3
-
-    Actual bulan test TIDAK dimasukkan
+    Actual bulan test tidak dimasukkan
     ke training.
     """
 
@@ -939,15 +1003,6 @@ def backtest_xgboost_details(
 
             # -------------------------------------------------
             # Histori training hanya 2 bulan
-            #
-            # Kita tidak boleh memasukkan actual bulan test.
-            #
-            # Maka:
-            #
-            # feature dari bulan 1
-            # target bulan 2
-            #
-            # lalu model digunakan untuk memprediksi bulan 3.
             # -------------------------------------------------
 
             if len(train_values) == 2:
@@ -983,18 +1038,14 @@ def backtest_xgboost_details(
                 X_train is None
                 or y_train is None
             ):
-
                 continue
 
             if len(X_train) < (
                 XGBOOST_MIN_TRAIN_SIZE
             ):
-
                 continue
 
-            model = (
-                build_xgboost_model()
-            )
+            model = build_xgboost_model()
 
             if model is None:
                 continue
@@ -1025,7 +1076,6 @@ def backtest_xgboost_details(
             if not np.isfinite(
                 prediction
             ):
-
                 continue
 
             actual_list.append(
@@ -1037,12 +1087,7 @@ def backtest_xgboost_details(
             )
 
         except Exception:
-
             continue
-
-    # -----------------------------------------------------
-    # Tidak ada backtest valid
-    # -----------------------------------------------------
 
     if not actual_list:
 
@@ -1051,10 +1096,6 @@ def backtest_xgboost_details(
             "forecast": [],
             "wape": np.nan,
         }
-
-    # -----------------------------------------------------
-    # WAPE
-    # -----------------------------------------------------
 
     wape = calculate_wape(
         actual_list,
@@ -1068,18 +1109,14 @@ def backtest_xgboost_details(
     }
 
 
-def backtest_xgboost(
-    values,
-) -> float:
+def backtest_xgboost(values) -> float:
     """
     Versi sederhana yang hanya
     mengembalikan WAPE.
     """
 
-    result = (
-        backtest_xgboost_details(
-            values
-        )
+    result = backtest_xgboost_details(
+        values
     )
 
     return result["wape"]
@@ -1129,44 +1166,15 @@ def forecast_with_method(
     # XGBoost
     # -----------------------------------------------------
 
-    if method_clean in [
+    if method_clean in {
         "XGBOOST",
         "XG BOOST",
         "XGB",
-    ]:
+    }:
 
         return xgboost_forecast(
             values
         )
-
-    # -----------------------------------------------------
-    # MA
-    # -----------------------------------------------------
-
-    if method_clean.startswith(
-        "MA"
-    ):
-
-        try:
-
-            window = int(
-                method_clean.replace(
-                    "MA",
-                    "",
-                )
-            )
-
-            if window <= 0:
-                return np.nan
-
-            return moving_average(
-                values,
-                window,
-            )
-
-        except Exception:
-
-            return np.nan
 
     # -----------------------------------------------------
     # WMA
@@ -1194,7 +1202,34 @@ def forecast_with_method(
             )
 
         except Exception:
+            return np.nan
 
+    # -----------------------------------------------------
+    # MA
+    # -----------------------------------------------------
+
+    if method_clean.startswith(
+        "MA"
+    ):
+
+        try:
+
+            window = int(
+                method_clean.replace(
+                    "MA",
+                    "",
+                )
+            )
+
+            if window <= 0:
+                return np.nan
+
+            return moving_average(
+                values,
+                window,
+            )
+
+        except Exception:
             return np.nan
 
     return np.nan
@@ -1211,16 +1246,12 @@ def backtest_method_details(
     """
     Backtesting method statistik.
 
-    Contoh histori 6 bulan:
+    Untuk MA/WMA:
 
-        training 2 bulan -> test bulan 3
-        training 3 bulan -> test bulan 4
-        training 4 bulan -> test bulan 5
-        training 5 bulan -> test bulan 6
+        training -> test bulan berikutnya
 
-    Untuk MA/WMA window tertentu,
-    hanya validation yang memiliki
-    data cukup yang digunakan.
+    Actual bulan test tidak digunakan
+    untuk menghitung forecast.
     """
 
     values = np.asarray(
@@ -1245,11 +1276,11 @@ def backtest_method_details(
     # XGBoost
     # -----------------------------------------------------
 
-    if method_clean in [
+    if method_clean in {
         "XGBOOST",
         "XG BOOST",
         "XGB",
-    ]:
+    }:
 
         return backtest_xgboost_details(
             values
@@ -1348,7 +1379,6 @@ def backtest_method_details(
             if not np.isfinite(
                 prediction
             ):
-
                 continue
 
             prediction = max(
@@ -1365,7 +1395,6 @@ def backtest_method_details(
             )
 
         except Exception:
-
             continue
 
     if not actual_list:
@@ -1414,10 +1443,7 @@ def get_available_methods(
     """
     Menentukan method berdasarkan jumlah histori.
 
-    1 bulan:
-        tidak cukup
-
-    2 bulan:
+    1-2 bulan:
         tidak cukup
 
     3 bulan:
@@ -1426,21 +1452,23 @@ def get_available_methods(
         XGBoost
 
     4 bulan:
-        MA2
-        MA3
-        WMA2
-        WMA3
+        MA2 - MA3
+        WMA2 - WMA3
         XGBoost
 
-    6 bulan:
-        MA2 - MA5
-        WMA2 - WMA5
+    8 bulan:
+        MA2 - MA7
+        WMA2 - WMA7
         XGBoost
 
     12 bulan:
         MA2 - MA11
         WMA2 - WMA11
         XGBoost
+
+    Semakin panjang histori,
+    semakin banyak window MA/WMA yang
+    bisa dibandingkan.
     """
 
     try:
@@ -1450,7 +1478,6 @@ def get_available_methods(
         )
 
     except Exception:
-
         return []
 
     if history_count < 3:
@@ -1504,22 +1531,14 @@ def get_available_methods(
 # AUTO BEST METHOD
 # =========================================================
 
-def auto_best_method(
-    values,
-):
+def auto_best_method(values):
     """
     Memilih method dengan WAPE
     backtesting terendah.
 
-    Return:
-
-        {
-            "method": ...,
-            "wape": ...,
-            "forecast": ...,
-            "actual": [...],
-            "backtest_forecast": [...]
-        }
+    Setelah method terbaik ditemukan,
+    forecast dibuat menggunakan SELURUH
+    histori yang diberikan.
     """
 
     values = np.asarray(
@@ -1555,7 +1574,7 @@ def auto_best_method(
     best_details = None
 
     # -----------------------------------------------------
-    # Backtesting seluruh candidate
+    # Backtesting semua candidate
     # -----------------------------------------------------
 
     for method in methods:
@@ -1572,7 +1591,6 @@ def auto_best_method(
         if not np.isfinite(
             wape
         ):
-
             continue
 
         if wape < best_wape:
@@ -1599,7 +1617,7 @@ def auto_best_method(
         }
 
     # -----------------------------------------------------
-    # Forecast periode berikutnya
+    # Forecast menggunakan seluruh histori
     # -----------------------------------------------------
 
     forecast = forecast_with_method(
@@ -1641,7 +1659,7 @@ def prepare_item_history(
     item_name,
     value_column,
     forecast_date,
-    history_months,
+    history_months=None,
 ):
     """
     Menyiapkan histori satu item
@@ -1651,17 +1669,30 @@ def prepare_item_history(
         atau
         OUT BBT
 
+    Perubahan penting:
+
+        history_months=None
+            -> SEMUA histori sebelum forecast
+
+        history_months=8
+            -> maksimal 8 bulan terakhir
+
+        history_months=3
+            -> maksimal 3 bulan terakhir
+
     Duplicate periode akan di-aggregate.
     """
+
+    empty_columns = [
+        "_periode",
+        "value",
+        "Satuan",
+    ]
 
     if df is None or df.empty:
 
         return pd.DataFrame(
-            columns=[
-                "_periode",
-                "value",
-                "Satuan",
-            ]
+            columns=empty_columns
         )
 
     required_columns = [
@@ -1675,11 +1706,7 @@ def prepare_item_history(
         if column not in df.columns:
 
             return pd.DataFrame(
-                columns=[
-                    "_periode",
-                    "value",
-                    "Satuan",
-                ]
+                columns=empty_columns
             )
 
     work = df.copy()
@@ -1706,11 +1733,7 @@ def prepare_item_history(
     if work.empty:
 
         return pd.DataFrame(
-            columns=[
-                "_periode",
-                "value",
-                "Satuan",
-            ]
+            columns=empty_columns
         )
 
     # -----------------------------------------------------
@@ -1742,11 +1765,7 @@ def prepare_item_history(
     if work.empty:
 
         return pd.DataFrame(
-            columns=[
-                "_periode",
-                "value",
-                "Satuan",
-            ]
+            columns=empty_columns
         )
 
     # -----------------------------------------------------
@@ -1800,26 +1819,33 @@ def prepare_item_history(
         )
     )
 
+    if grouped.empty:
+        return grouped
+
+    # -----------------------------------------------------
+    # Normalisasi setting histori
+    # -----------------------------------------------------
+
+    history_months = _normalize_history_months(
+        history_months
+    )
+
     # -----------------------------------------------------
     # Ambil histori terakhir
+    #
+    # PENTING:
+    #
+    # Kalau history_months = None,
+    # JANGAN dipotong.
+    #
+    # Jadi semua histori tersedia dipakai.
     # -----------------------------------------------------
 
     if history_months is not None:
 
-        try:
-
-            history_months = int(
-                history_months
-            )
-
-            if history_months > 0:
-
-                grouped = grouped.tail(
-                    history_months
-                )
-
-        except Exception:
-            pass
+        grouped = grouped.tail(
+            history_months
+        )
 
     return grouped.reset_index(
         drop=True
@@ -1834,7 +1860,7 @@ def forecast_stream(
     df,
     value_column,
     forecast_date,
-    history_months,
+    history_months=None,
 ):
     """
     Forecast seluruh item untuk satu stream.
@@ -1843,6 +1869,17 @@ def forecast_stream(
 
         OUT BBB
         OUT BBT
+
+    history_months:
+
+        None
+            -> semua histori tersedia
+
+        3
+            -> maksimal 3 bulan terakhir
+
+        8
+            -> maksimal 8 bulan terakhir
     """
 
     empty_summary = {
@@ -1870,6 +1907,14 @@ def forecast_stream(
             ),
             empty_summary,
         )
+
+    # -----------------------------------------------------
+    # Normalisasi history setting
+    # -----------------------------------------------------
+
+    history_months = _normalize_history_months(
+        history_months
+    )
 
     # -----------------------------------------------------
     # Unique item
@@ -1986,7 +2031,7 @@ def forecast_stream(
 
         # -------------------------------------------------
         # Aggregate backtest
-        # -----------------------------------------------------
+        # -------------------------------------------------
 
         if (
             best["actual"]
@@ -2060,10 +2105,20 @@ def forecast_stream(
         and aggregate_forecast
     ):
 
+        aggregate_actual_array = np.asarray(
+            aggregate_actual,
+            dtype=float,
+        )
+
+        aggregate_forecast_array = np.asarray(
+            aggregate_forecast,
+            dtype=float,
+        )
+
         total_actual = float(
             np.sum(
                 np.abs(
-                    aggregate_actual
+                    aggregate_actual_array
                 )
             )
         )
@@ -2071,13 +2126,8 @@ def forecast_stream(
         total_error = float(
             np.sum(
                 np.abs(
-                    np.asarray(
-                        aggregate_actual
-                    )
-                    -
-                    np.asarray(
-                        aggregate_forecast
-                    )
+                    aggregate_actual_array
+                    - aggregate_forecast_array
                 )
             )
         )
@@ -2085,11 +2135,8 @@ def forecast_stream(
         if total_actual == 0:
 
             if total_error == 0:
-
                 stream_wape = 0.0
-
             else:
-
                 stream_wape = 100.0
 
         else:
@@ -2101,13 +2148,6 @@ def forecast_stream(
             )
 
     else:
-
-        # -------------------------------------------------
-        # Tidak ada backtesting valid.
-        #
-        # Jangan dianggap sebagai WAPE 0%.
-        # WAPE 0% hanya berarti tidak ada error.
-        # -------------------------------------------------
 
         total_actual = 0.0
         total_error = 0.0
@@ -2203,18 +2243,27 @@ def forecast_stream(
 def run_forecasting(
     df,
     forecast_period,
-    history_months,
+    history_months=None,
 ):
     """
     Fungsi utama yang dipanggil oleh main.py.
 
-    Signature:
+    Contoh:
 
         run_forecasting(
             df=df,
-            forecast_period=period_text,
-            history_months=setting["history_months"],
+            forecast_period="September 2026",
+            history_months=None,
         )
+
+    Jika history_months=None:
+        -> SEMUA histori tersedia dipakai.
+
+    Jika history_months=8:
+        -> maksimal 8 bulan terakhir dipakai.
+
+    Jika history_months=3:
+        -> maksimal 3 bulan terakhir dipakai.
 
     Return:
 
@@ -2269,22 +2318,13 @@ def run_forecasting(
         )
 
     # -----------------------------------------------------
-    # Check history months
+    # Normalize history months
+    #
+    # None = semua histori
     # -----------------------------------------------------
 
-    try:
-
-        history_months = int(
-            history_months
-        )
-
-    except Exception:
-
-        history_months = 3
-
-    history_months = max(
-        1,
-        history_months,
+    history_months = _normalize_history_months(
+        history_months
     )
 
     # -----------------------------------------------------
@@ -2458,6 +2498,7 @@ if __name__ == "__main__":
         3,
         4,
         6,
+        8,
         12,
     ]:
 
