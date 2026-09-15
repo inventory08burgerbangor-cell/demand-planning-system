@@ -1,6 +1,10 @@
 import streamlit as st
 import pandas as pd
 
+# forecasting.py, database.py, dan export.py adalah modul utama aplikasi.
+# main.py hanya menjadi layer UI/orchestrator; seluruh perhitungan
+# forecasting tetap berada di forecasting.py dan penyimpanan/export
+# menggunakan modul masing-masing.
 from forecasting import (
     run_forecasting,
     parse_period,
@@ -900,6 +904,27 @@ def normalize_loaded_dataframe(data):
         for col in df.columns
     ]
 
+    # ---------------------------------------------------------
+    # Kompatibilitas history lama
+    # ---------------------------------------------------------
+    # History sebelum revisi 3-metode hanya memiliki:
+    #   Forecast + WAPE (dan pada versi lama dapat memiliki kolom metode)
+    # Agar history lama tetap bisa dibuka di Dashboard, nilai
+    # Forecast/WAPE lama dipetakan sebagai kolom MA. Kolom WMA
+    # dan XGBoost tetap kosong karena data historis tersebut
+    # memang tidak menyimpan hasil kedua metode itu.
+    if "Forecast MA" not in df.columns and "Forecast" in df.columns:
+        df["Forecast MA"] = pd.to_numeric(
+            df["Forecast"],
+            errors="coerce",
+        )
+
+    if "WAPE MA" not in df.columns and "WAPE" in df.columns:
+        df["WAPE MA"] = pd.to_numeric(
+            df["WAPE"],
+            errors="coerce",
+        )
+
     for col in [
         "Histori",
         "WAPE MA",
@@ -921,7 +946,113 @@ def normalize_loaded_dataframe(data):
                 errors="coerce",
             )
 
+    # Pastikan urutan kolom Dashboard konsisten walaupun history
+    # lama/baru mempunyai susunan kolom yang berbeda.
+    preferred_columns = [
+        "Nama Barang",
+        "Satuan",
+        "Forecast MA",
+        "WAPE MA",
+        "Forecast WMA",
+        "WAPE WMA",
+        "Forecast XGBoost",
+        "WAPE XGBoost",
+        "Histori",
+    ]
+
+    existing_preferred = [
+        col
+        for col in preferred_columns
+        if col in df.columns
+    ]
+
+    remaining_columns = [
+        col
+        for col in df.columns
+        if col not in existing_preferred
+        and col not in [
+            "Best Method",
+            "Forecast",
+            "WAPE",
+            "Accuracy",
+        ]
+    ]
+
+    df = df[
+        existing_preferred + remaining_columns
+    ]
+
     return df
+
+
+# =========================================================
+# NORMALIZE LOADED SUMMARY
+# =========================================================
+
+def normalize_loaded_summary(summary):
+    """
+    Menyamakan summary history lama dan history 3-metode.
+
+    History lama hanya menyimpan WAPE/Accuracy generik. Nilai
+    tersebut diperlakukan sebagai alias MA untuk kompatibilitas.
+    WMA dan XGBoost tidak ditebak dari data lama dan tetap None.
+    """
+    if not isinstance(summary, dict):
+        summary = {}
+
+    normalized = {}
+
+    for stream in ["bbb", "bbt"]:
+        source = summary.get(stream, {})
+        if not isinstance(source, dict):
+            source = {}
+
+        target = DEFAULT_SUMMARY[stream].copy()
+
+        # Salin nilai yang memang tersedia pada history baru.
+        for key in target:
+            if key in source:
+                target[key] = source[key]
+
+        # History lama: WAPE/Accuracy generik dipetakan ke MA.
+        if target.get("wape_ma") is None:
+            legacy_wape = source.get("wape")
+            if legacy_wape is not None:
+                target["wape_ma"] = legacy_wape
+
+        if target.get("accuracy_ma") is None:
+            legacy_accuracy = source.get("accuracy")
+            if legacy_accuracy is not None:
+                target["accuracy_ma"] = legacy_accuracy
+
+        if target.get("total_actual_ma", 0.0) == 0.0:
+            legacy_actual = source.get("total_actual")
+            if legacy_actual is not None:
+                try:
+                    target["total_actual_ma"] = float(legacy_actual)
+                except Exception:
+                    pass
+
+        if target.get("total_error_ma", 0.0) == 0.0:
+            legacy_error = source.get("total_error")
+            if legacy_error is not None:
+                try:
+                    target["total_error_ma"] = float(legacy_error)
+                except Exception:
+                    pass
+
+        # Alias tetap disediakan untuk kompatibilitas kode/history lama.
+        target["wape"] = target.get("wape_ma")
+        target["accuracy"] = target.get("accuracy_ma")
+        target["total_actual"] = target.get("total_actual_ma", 0.0)
+        target["total_error"] = target.get("total_error_ma", 0.0)
+
+        # Tidak ada lagi pemilihan metode.
+        target["best_method"] = None
+
+        normalized[stream] = target
+
+    return normalized
 
 
 # =========================================================
@@ -946,34 +1077,9 @@ def load_forecast_to_session(history_id):
         record.get("forecast_bbt")
     )
 
-    summary = record.get(
-        "summary",
-        {},
+    summary = normalize_loaded_summary(
+        record.get("summary", {})
     )
-
-    if not isinstance(summary, dict):
-
-        summary = {}
-
-    if "bbb" not in summary:
-
-        summary["bbb"] = (
-            DEFAULT_SUMMARY["bbb"].copy()
-        )
-
-    if "bbt" not in summary:
-
-        summary["bbt"] = (
-            DEFAULT_SUMMARY["bbt"].copy()
-        )
-
-    for stream in ["bbb", "bbt"]:
-
-        for key, default_value in DEFAULT_SUMMARY[stream].items():
-
-            if key not in summary[stream]:
-
-                summary[stream][key] = default_value
 
     st.session_state.forecast_bbb = df_bbb
 
@@ -1226,7 +1332,7 @@ Tabel forecast menampilkan hasil setiap metode secara terpisah:
 - WAPE XGBoost
 - Histori
 
-Tidak ada kolom **Best Method** karena sistem tidak memilih satu metode terbaik.
+Tidak ada pemilihan metode otomatis; semua hasil metode ditampilkan.
 
 ### Export Excel
 
@@ -1647,9 +1753,9 @@ WMA berguna ketika kondisi demand terbaru dianggap lebih relevan dibandingkan pe
 
 XGBoost adalah metode machine learning yang dapat mempelajari pola historis untuk menghasilkan forecast.
 
-Dalam sistem ini XGBoost tidak otomatis dianggap sebagai metode terbaik.
+Dalam sistem ini XGBoost dihitung **secara independen** dari MA dan WMA.
 
-XGBoost dievaluasi secara independen menggunakan:
+XGBoost dievaluasi menggunakan:
 
 **Backtesting**
 
@@ -1657,17 +1763,15 @@ dan
 
 **WAPE**
 
-Contoh:
+Contoh hasil:
 
 | Metode | WAPE |
 |---|---:|
-| MA 2 | 12,40% |
-| WMA 2 | 9,80% |
+| MA | 12,40% |
+| WMA | 9,80% |
 | XGBoost | 7,50% |
 
-Maka XGBoost menjadi kandidat terbaik karena memiliki WAPE paling rendah.
-
-Namun jika MA atau WMA memiliki WAPE lebih rendah, metode tersebut yang dipilih.
+Ketiga hasil tetap ditampilkan. WAPE digunakan untuk melihat performa masing-masing metode, bukan untuk memilih satu metode secara otomatis.
             """,
         },
 
@@ -1753,9 +1857,9 @@ Setiap metode menghasilkan:
 - WAPE sendiri
 - Forecast Accuracy sendiri
 
-### Tidak Ada Best Method
+### Tidak Ada Pemilihan Metode Otomatis
 
-Sistem **tidak memilih satu metode terbaik** dan tidak membuat kolom Best Method.
+Sistem **tidak memilih satu metode secara otomatis**; MA, WMA, dan XGBoost ditampilkan bersamaan.
 
 Contoh:
 
@@ -1854,7 +1958,7 @@ Metode tersebut menghasilkan error agregat sebesar:
 
 Kemudian metode lain juga diuji secara independen.
 
-Hasil WAPE setiap metode tetap ditampilkan dan tidak digunakan untuk memilih satu Best Method.
+Hasil WAPE setiap metode tetap ditampilkan dan tidak digunakan untuk memilih satu metode secara otomatis.
             """,
         },
 
@@ -1997,7 +2101,7 @@ Jadi:
 ### Ringkasan
 
 1. **MA, WMA, dan XGBoost dihitung secara terpisah.**
-2. **Tidak ada Best Method.**
+2. **Tidak ada pemilihan metode otomatis.**
 3. **Target jauh dihitung bertahap per bulan.**
 4. **Actual intermediate selalu lebih diprioritaskan.**
 5. **Forecast recursive tidak digunakan sebagai actual untuk WAPE.**
@@ -2045,7 +2149,7 @@ sistem akan:
 3. Memuat forecast BBT.
 4. Memuat WAPE.
 5. Memuat Forecast Accuracy.
-6. Memuat metode terbaik.
+6. Memuat performa WAPE dan Forecast Accuracy setiap metode.
 7. Mengembalikan setting forecast.
 8. Mengarahkan user ke Dashboard.
 
@@ -2547,6 +2651,18 @@ if menu == "📊 Dashboard":
         {},
     )
 
+    # Dashboard hanya menampilkan performance jika memang ada
+    # hasil forecast yang sudah dimuat. Ini mencegah Dashboard
+    # terlihat seolah-olah memiliki nilai performance padahal
+    # belum ada forecast pada session.
+    has_loaded_forecast = (
+        st.session_state.forecast_loaded
+        and (
+            not st.session_state.forecast_bbb.empty
+            or not st.session_state.forecast_bbt.empty
+        )
+    )
+
     def render_method_performance(
         stream_label,
         stream_summary,
@@ -2586,21 +2702,93 @@ if menu == "📊 Dashboard":
                 )
 
                 st.caption(
-                    f"Accuracy {method_name}: "
+                    f"Forecast Accuracy {method_name}: "
                     f"{format_percent(
                         stream_summary.get(accuracy_key)
                     )}"
                 )
 
-    render_method_performance(
-        "PERSENTASE BBB",
-        summary_bbb,
-    )
+    if has_loaded_forecast:
 
-    render_method_performance(
-        "PERSENTASE BBT",
-        summary_bbt,
-    )
+        render_method_performance(
+            "PERFORMANCE BBB",
+            summary_bbb,
+        )
+
+        render_method_performance(
+            "PERFORMANCE BBT",
+            summary_bbt,
+        )
+
+        st.caption(
+            "WAPE dan Forecast Accuracy berasal dari backtesting "
+            "histori. Setiap metode dihitung secara independen; "
+            "tidak ada pemilihan satu metode otomatis."
+        )
+
+        # Tabel ringkas agar Dashboard lebih mudah dibandingkan
+        # dengan hasil pada Forecast/Excel.
+        comparison_df = pd.DataFrame(
+            [
+                {
+                    "Stream": "BBB",
+                    "Metode": "MA",
+                    "WAPE": summary_bbb.get("wape_ma"),
+                    "Forecast Accuracy": summary_bbb.get("accuracy_ma"),
+                },
+                {
+                    "Stream": "BBB",
+                    "Metode": "WMA",
+                    "WAPE": summary_bbb.get("wape_wma"),
+                    "Forecast Accuracy": summary_bbb.get("accuracy_wma"),
+                },
+                {
+                    "Stream": "BBB",
+                    "Metode": "XGBoost",
+                    "WAPE": summary_bbb.get("wape_xgboost"),
+                    "Forecast Accuracy": summary_bbb.get("accuracy_xgboost"),
+                },
+                {
+                    "Stream": "BBT",
+                    "Metode": "MA",
+                    "WAPE": summary_bbt.get("wape_ma"),
+                    "Forecast Accuracy": summary_bbt.get("accuracy_ma"),
+                },
+                {
+                    "Stream": "BBT",
+                    "Metode": "WMA",
+                    "WAPE": summary_bbt.get("wape_wma"),
+                    "Forecast Accuracy": summary_bbt.get("accuracy_wma"),
+                },
+                {
+                    "Stream": "BBT",
+                    "Metode": "XGBoost",
+                    "WAPE": summary_bbt.get("wape_xgboost"),
+                    "Forecast Accuracy": summary_bbt.get("accuracy_xgboost"),
+                },
+            ]
+        )
+
+        comparison_df["WAPE"] = comparison_df["WAPE"].apply(
+            format_percent
+        )
+        comparison_df["Forecast Accuracy"] = comparison_df[
+            "Forecast Accuracy"
+        ].apply(format_percent)
+
+        st.dataframe(
+            comparison_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    else:
+
+        st.info(
+            "Belum ada hasil forecast yang dimuat. "
+            "Jalankan forecast pada menu **🔮 Forecast** atau "
+            "gunakan **LOAD** untuk membuka hasil dari History."
+        )
 
     st.divider()
 
@@ -2630,13 +2818,19 @@ if menu == "📊 Dashboard":
 
             display_forecast_table(
                 df_bbb,
-                limit=5,
+                limit=min(20, len(df_bbb)),
             )
 
-            st.caption(
-                f"Menampilkan 5 dari "
-                f"{len(df_bbb)} item."
-            )
+            if len(df_bbb) > 20:
+                st.caption(
+                    f"Menampilkan 20 dari "
+                    f"{len(df_bbb)} item. "
+                    "Buka menu Forecast untuk melihat hasil lengkap."
+                )
+            else:
+                st.caption(
+                    f"Menampilkan {len(df_bbb)} item."
+                )
 
     with col2:
 
@@ -2658,13 +2852,19 @@ if menu == "📊 Dashboard":
 
             display_forecast_table(
                 df_bbt,
-                limit=5,
+                limit=min(20, len(df_bbt)),
             )
 
-            st.caption(
-                f"Menampilkan 5 dari "
-                f"{len(df_bbt)} item."
-            )
+            if len(df_bbt) > 20:
+                st.caption(
+                    f"Menampilkan 20 dari "
+                    f"{len(df_bbt)} item. "
+                    "Buka menu Forecast untuk melihat hasil lengkap."
+                )
+            else:
+                st.caption(
+                    f"Menampilkan {len(df_bbt)} item."
+                )
 
     # -----------------------------------------------------
     # EXPORT EXCEL
@@ -3973,7 +4173,7 @@ elif menu == "🔮 Forecast":
 
         st.caption(
             "Setiap metode memiliki Forecast dan WAPE sendiri. "
-            "Tidak ada pemilihan Best Method."
+            "Tidak ada pemilihan metode otomatis."
         )
 
         performance_df = pd.DataFrame(
@@ -4484,7 +4684,7 @@ st.markdown(
 # September sebagai histori sementara untuk menghitung Oktober.
 # Jika actual September tersedia, actual September yang dipakai.
 # Forecast recursive bukan actual dan tidak dimasukkan sebagai actual pada
-# perhitungan WAPE/backtesting. Tidak ada Best Method.
+# perhitungan WAPE/backtesting. Tidak ada pemilihan metode otomatis.
 #
 # CATATAN PEMELIHARAAN
 #
