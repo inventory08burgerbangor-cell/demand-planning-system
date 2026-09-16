@@ -1211,10 +1211,10 @@ def _write_comparing_section(worksheet, dataframe, title, start_row, fill_color)
 
 def _write_forecast_monthly_sheet(writer, summary, periode_forecast, history_df, history_months, forecast_bbb, forecast_bbt):
     """Dashboard-style Performance Forecasting + explanation WAPE."""
-    ws = writer.book.create_sheet("Forecast Bulanan")
+    ws = writer.book.create_sheet("Performance")
     ws.sheet_view.showGridLines = False
 
-    ws["A1"] = "FORECAST BULANAN - PERFORMANCE FORECASTING"
+    ws["A1"] = "PERFORMANCE FORECASTING"
     ws.merge_cells("A1:H1")
     ws["A1"].font = Font(bold=True, size=15)
     ws["A1"].alignment = Alignment(horizontal="left")
@@ -1360,7 +1360,7 @@ def export_forecast_excel(
         # Apply common styling to detail/recursive sheets only.
         for sheet_name in writer.book.sheetnames:
             ws = writer.book[sheet_name]
-            if sheet_name not in {"Forecast Bulanan", "Comparing"}:
+            if sheet_name not in {"Performance", "Comparing"}:
                 _format_worksheet(ws)
 
         workbook = writer.book
