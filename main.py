@@ -2983,6 +2983,14 @@ if menu == "📊 Dashboard":
                     summary=(
                         st.session_state.forecast_summary
                     ),
+                    history_df=(
+                        st.session_state.data_out
+                    ),
+                    history_months=(
+                        get_forecast_history_parameter(
+                            st.session_state.forecast_setting
+                        )
+                    ),
                 )
 
                 filename = generate_export_filename(

@@ -1,7 +1,7 @@
 import pandas as pd
 from io import BytesIO
 
-from openpyxl.styles import Font, Alignment
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
 
@@ -757,6 +757,501 @@ def _write_dataframe_sheet(
     )
 
 
+
+# =========================================================
+# PERFORMANCE + WAPE EXPLANATION HELPERS
+# =========================================================
+
+_METHODS = ("MA", "WMA", "XGBoost")
+_COMPARING_COLUMNS = [
+    "Nama Barang",
+    "Satuan",
+    "Forecast MA",
+    "Forecast WMA",
+    "Forecast XGBoost",
+]
+
+
+def _safe_summary_stream(summary, stream):
+    """Ambil summary stream secara aman dari summary forecasting."""
+    if not isinstance(summary, dict):
+        return {}
+    value = summary.get(stream, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _summary_value(stream_summary, key):
+    value = stream_summary.get(key, float("nan"))
+    try:
+        return float(value)
+    except Exception:
+        return float("nan")
+
+
+def _format_value(value, decimals=2):
+    try:
+        number = float(value)
+        if pd.isna(number):
+            return "-"
+        return f"{number:,.{decimals}f}"
+    except Exception:
+        return "-"
+
+
+def _parse_period_for_export(value, default_year=None):
+    """Parse Bulan menggunakan parser yang sama dengan forecasting.py."""
+    try:
+        from forecasting import parse_period
+        return parse_period(value, default_year=default_year)
+    except Exception:
+        return pd.NaT
+
+
+def _prepare_dynamic_example(history_df, stream, periode_forecast, history_months=None, forecast_df=None):
+    """
+    Mengambil satu item nyata dari Data OUT dan menghitung detail backtest
+    dengan fungsi forecasting yang sama dengan dashboard.
+
+    Tidak membuat angka contoh/dummy. Bila data tidak tersedia, return None.
+    """
+    df = _safe_dataframe(history_df)
+    if df.empty:
+        return None
+
+    value_column = "OUT BBB" if str(stream).upper() == "BBB" else "OUT BBT"
+    required = {"Bulan", "Nama Barang", value_column}
+    if not required.issubset(df.columns):
+        return None
+
+    forecast_date = _parse_period_for_export(periode_forecast)
+    if forecast_date is None or pd.isna(forecast_date):
+        return None
+
+    try:
+        from forecasting import prepare_item_history, backtest_method_details
+    except Exception:
+        return None
+
+    work = df.copy()
+    work["Nama Barang"] = work["Nama Barang"].fillna("").astype(str).str.strip()
+    work = work[work["Nama Barang"] != ""].copy()
+    if work.empty:
+        return None
+
+    # Pilih item dengan histori paling lengkap dan nilai actual > 0.
+    candidates = []
+    for item_name in work["Nama Barang"].drop_duplicates().tolist():
+        history = prepare_item_history(
+            work,
+            item_name,
+            value_column,
+            forecast_date,
+            history_months=history_months,
+        )
+        if history.empty:
+            continue
+        total = pd.to_numeric(history["value"], errors="coerce").fillna(0.0).sum()
+        if float(total) <= 0:
+            continue
+        candidates.append((len(history), str(item_name), history))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: (-x[0], x[1].lower()))
+    _, item_name, history = candidates[0]
+
+    satuan = ""
+    if "Satuan" in history.columns and not history.empty:
+        satuan = str(history.iloc[-1].get("Satuan", "") or "").strip()
+
+    methods = {}
+    for method in _METHODS:
+        try:
+            details = backtest_method_details(history["value"].to_numpy(dtype=float), method)
+        except Exception:
+            details = {"actual": [], "forecast": [], "wape": float("nan")}
+        methods[method] = details
+
+    # Ambil forecast final yang benar-benar ditampilkan sistem bila tersedia.
+    forecast_row = pd.DataFrame()
+    if forecast_df is not None:
+        fdf = _safe_dataframe(forecast_df)
+        if not fdf.empty and "Nama Barang" in fdf.columns:
+            mask = fdf["Nama Barang"].fillna("").astype(str).str.strip().eq(item_name)
+            if mask.any():
+                forecast_row = fdf.loc[mask].head(1).copy()
+
+    return {
+        "stream": str(stream).upper(),
+        "item": item_name,
+        "satuan": satuan,
+        "history": history.reset_index(drop=True),
+        "methods": methods,
+        "forecast_row": forecast_row,
+        "forecast_date": forecast_date,
+    }
+
+
+def _backtest_detail_table(example):
+    """Bangun tabel actual-vs-backtest untuk satu item nyata."""
+    if not example:
+        return pd.DataFrame()
+
+    history = example["history"]
+    rows = []
+    periods = history["_periode"].tolist()
+
+    # MA/WMA dimulai dari observasi kedua; XGBoost dari observasi ketiga.
+    for method in _METHODS:
+        details = example["methods"].get(method, {})
+        actual = list(details.get("actual", []) or [])
+        forecasts = list(details.get("forecast", []) or [])
+        n = min(len(actual), len(forecasts))
+        if n <= 0:
+            continue
+
+        offset = len(periods) - n
+        # Untuk metode yang mengembalikan seluruh pasangan mulai dari i=1/i=2,
+        # gunakan periode aktual terakhir sebanyak n. Ini identik dengan urutan
+        # actual_list yang dibentuk forecasting.py.
+        if method in {"MA", "WMA"}:
+            offset = 1
+        elif method == "XGBoost":
+            offset = 2
+
+        for idx in range(n):
+            p = periods[offset + idx] if offset + idx < len(periods) else pd.NaT
+            rows.append(
+                {
+                    "Periode": p,
+                    "Actual OUT": float(actual[idx]),
+                    f"Forecast Backtest {method}": float(forecasts[idx]),
+                    f"Error Absolut {method}": abs(float(actual[idx]) - float(forecasts[idx])),
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame()
+
+    result = pd.DataFrame(rows)
+    # Gabungkan berdasarkan periode agar satu baris berisi ketiga metode.
+    result = result.groupby("Periode", as_index=False).first().sort_values("Periode")
+    for method in _METHODS:
+        forecast_col = f"Forecast Backtest {method}"
+        error_col = f"Error Absolut {method}"
+        if forecast_col not in result.columns:
+            result[forecast_col] = pd.NA
+        if error_col not in result.columns:
+            result[error_col] = pd.NA
+    return result.reset_index(drop=True)
+
+
+def _write_title(worksheet, row, text, end_col=5, fill_color="D9EAF7"):
+    worksheet.cell(row, 1, text)
+    worksheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=end_col)
+    cell = worksheet.cell(row, 1)
+    cell.font = Font(bold=True, size=13)
+    cell.fill = PatternFill("solid", fgColor=fill_color)
+    cell.alignment = Alignment(horizontal="left", vertical="center")
+    worksheet.row_dimensions[row].height = 24
+
+
+def _write_table(worksheet, start_row, dataframe, number_columns=None, header_fill="D9EAF7"):
+    if dataframe is None:
+        dataframe = pd.DataFrame()
+    df = dataframe.copy()
+    headers = list(df.columns)
+    if not headers:
+        return start_row
+
+    for col_idx, header in enumerate(headers, start=1):
+        cell = worksheet.cell(start_row, col_idx, header)
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor=header_fill)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = Border(
+            left=Side(style="thin", color="B7B7B7"),
+            right=Side(style="thin", color="B7B7B7"),
+            top=Side(style="thin", color="B7B7B7"),
+            bottom=Side(style="thin", color="B7B7B7"),
+        )
+
+    for r_offset, values in enumerate(df.itertuples(index=False, name=None), start=1):
+        for c_idx, value in enumerate(values, start=1):
+            cell = worksheet.cell(start_row + r_offset, c_idx, value)
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+            cell.border = Border(
+                left=Side(style="thin", color="D9D9D9"),
+                right=Side(style="thin", color="D9D9D9"),
+                top=Side(style="thin", color="D9D9D9"),
+                bottom=Side(style="thin", color="D9D9D9"),
+            )
+            if number_columns and c_idx in number_columns and value is not None:
+                cell.number_format = "#,##0.00"
+
+    return start_row + len(df)
+
+
+def _write_performance_section(worksheet, stream, stream_summary, start_row, fill_color):
+    """Performance Forecasting seperti dashboard, tanpa Best Method."""
+    _write_title(worksheet, start_row, f"Performance Forecasting - {stream}", end_col=5, fill_color=fill_color)
+    table = pd.DataFrame([
+        {
+            "Metode": "MA",
+            "WAPE (%)": _summary_value(stream_summary, "wape_ma"),
+            "Accuracy (%)": _summary_value(stream_summary, "accuracy_ma"),
+            "Total Actual Backtest": _summary_value(stream_summary, "total_actual_ma"),
+            "Total Error Absolut": _summary_value(stream_summary, "total_error_ma"),
+        },
+        {
+            "Metode": "WMA",
+            "WAPE (%)": _summary_value(stream_summary, "wape_wma"),
+            "Accuracy (%)": _summary_value(stream_summary, "accuracy_wma"),
+            "Total Actual Backtest": _summary_value(stream_summary, "total_actual_wma"),
+            "Total Error Absolut": _summary_value(stream_summary, "total_error_wma"),
+        },
+        {
+            "Metode": "XGBoost",
+            "WAPE (%)": _summary_value(stream_summary, "wape_xgboost"),
+            "Accuracy (%)": _summary_value(stream_summary, "accuracy_xgboost"),
+            "Total Actual Backtest": _summary_value(stream_summary, "total_actual_xgboost"),
+            "Total Error Absolut": _summary_value(stream_summary, "total_error_xgboost"),
+        },
+    ])
+    return _write_table(worksheet, start_row + 1, table, number_columns={2, 3, 4, 5}, header_fill=fill_color) + 2
+
+
+def _write_wape_explanation(worksheet, start_row):
+    _write_title(worksheet, start_row, "Dari Mana WAPE Berasal?", end_col=5, fill_color="FFF2CC")
+    rows = [
+        ["Tahap", "Penjelasan"],
+        ["1. Histori Actual", "Sistem mengambil nilai OUT aktual pada histori sebelum periode forecast."],
+        ["2. Backtesting", "Untuk setiap metode, sistem melakukan walk-forward: sebagian histori dipakai sebagai training lalu bulan berikutnya diprediksi."],
+        ["3. Forecast Backtest", "Prediksi backtest dibandingkan dengan Actual OUT pada bulan yang sama. Forecast masa depan/recursive tidak dipakai untuk WAPE."],
+        ["4. Error Absolut", "Error Absolut = |Actual OUT - Forecast Backtest|."],
+        ["5. WAPE", "WAPE = Σ|Actual OUT - Forecast Backtest| / Σ|Actual OUT| × 100%."],
+        ["6. Accuracy", "Accuracy = max(0, 100 - WAPE)."],
+        ["Catatan", "WAPE dihitung terpisah untuk MA, WMA, dan XGBoost. Tidak ada Best Method."],
+    ]
+    df = pd.DataFrame(rows[1:], columns=rows[0])
+    end_row = _write_table(worksheet, start_row + 1, df, header_fill="FFF2CC")
+    return end_row + 2
+
+
+def _write_dynamic_example(worksheet, example, start_row):
+    if not example:
+        _write_title(worksheet, start_row, "Contoh Perhitungan WAPE dari Data OUT", end_col=5, fill_color="E2F0D9")
+        worksheet.cell(start_row + 1, 1, "Contoh dinamis belum tersedia karena data OUT asli tidak tersedia pada saat export.")
+        worksheet.merge_cells(start_row=start_row + 1, start_column=1, end_row=start_row + 1, end_column=5)
+        return start_row + 3
+
+    item = example["item"]
+    stream = example["stream"]
+    satuan = example["satuan"]
+    _write_title(
+        worksheet,
+        start_row,
+        f"Contoh Dinamis WAPE - {item} ({stream})",
+        end_col=8,
+        fill_color="E2F0D9",
+    )
+    worksheet.cell(start_row + 1, 1, "Sumber")
+    worksheet.cell(start_row + 1, 2, "Data OUT yang sedang dipakai untuk forecasting")
+    worksheet.cell(start_row + 2, 1, "Nama Barang")
+    worksheet.cell(start_row + 2, 2, item)
+    worksheet.cell(start_row + 3, 1, "Satuan")
+    worksheet.cell(start_row + 3, 2, satuan)
+
+    history = example["history"].copy()
+    hist_table = pd.DataFrame({
+        "Periode": history["_periode"],
+        "Actual OUT": pd.to_numeric(history["value"], errors="coerce"),
+    })
+    row = start_row + 5
+    worksheet.cell(row, 1, "Histori Actual yang Digunakan")
+    worksheet.cell(row, 1).font = Font(bold=True)
+    row = _write_table(worksheet, row + 1, hist_table, number_columns={2}, header_fill="E2F0D9") + 2
+
+    # Projection calculations: use same MA/WMA functions and the final system output.
+    try:
+        from forecasting import moving_average, weighted_moving_average
+        values = history["value"].to_numpy(dtype=float)
+        ma_calc = moving_average(values, min(3, len(values))) if len(values) else float("nan")
+        wma_calc = weighted_moving_average(values, min(3, len(values))) if len(values) else float("nan")
+    except Exception:
+        ma_calc = wma_calc = float("nan")
+
+    forecast_row = example.get("forecast_row", pd.DataFrame())
+    def get_forecast(column):
+        if forecast_row is not None and not forecast_row.empty and column in forecast_row.columns:
+            try:
+                return float(forecast_row.iloc[0][column])
+            except Exception:
+                pass
+        return float("nan")
+
+    projection = pd.DataFrame([
+        {
+            "Metode": "MA",
+            "Dasar Perhitungan": f"Rata-rata {min(3, len(values))} histori terakhir",
+            "Perhitungan": f"{_format_value(ma_calc)}",
+            "Forecast Sistem": get_forecast("Forecast MA"),
+        },
+        {
+            "Metode": "WMA",
+            "Dasar Perhitungan": "Weighted Moving Average; bobot makin besar untuk periode terbaru",
+            "Perhitungan": f"{_format_value(wma_calc)}",
+            "Forecast Sistem": get_forecast("Forecast WMA"),
+        },
+        {
+            "Metode": "XGBoost",
+            "Dasar Perhitungan": "Model XGBoost dilatih dari histori item; prediksi final berasal dari proses forecasting sistem",
+            "Perhitungan": "Tidak diringkas menjadi satu rumus aritmetika",
+            "Forecast Sistem": get_forecast("Forecast XGBoost"),
+        },
+    ])
+    worksheet.cell(row, 1, "Projection / Forecast")
+    worksheet.cell(row, 1).font = Font(bold=True)
+    row = _write_table(worksheet, row + 1, projection, number_columns={4}, header_fill="E2F0D9") + 2
+
+    # Actual vs backtest detail.
+    detail = _backtest_detail_table(example)
+    if detail.empty:
+        worksheet.cell(row, 1, "Backtest detail tidak tersedia untuk item ini.")
+        worksheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+        return row + 3
+
+    # Reformat to one table, with blanks where a method has no backtest for a period.
+    detail = detail.rename(columns={
+        "Forecast Backtest MA": "Forecast MA (Backtest)",
+        "Error Absolut MA": "Error MA",
+        "Forecast Backtest WMA": "Forecast WMA (Backtest)",
+        "Error Absolut WMA": "Error WMA",
+        "Forecast Backtest XGBoost": "Forecast XGBoost (Backtest)",
+        "Error Absolut XGBoost": "Error XGBoost",
+    })
+    cols = [
+        "Periode", "Actual OUT",
+        "Forecast MA (Backtest)", "Error MA",
+        "Forecast WMA (Backtest)", "Error WMA",
+        "Forecast XGBoost (Backtest)", "Error XGBoost",
+    ]
+    for c in cols:
+        if c not in detail.columns:
+            detail[c] = float("nan")
+    detail = detail[cols]
+    detail["Periode"] = detail["Periode"].map(lambda x: x.strftime("%B %Y") if hasattr(x, "strftime") else str(x))
+
+    worksheet.cell(row, 1, "Actual vs Forecast Backtest")
+    worksheet.cell(row, 1).font = Font(bold=True)
+    row = _write_table(worksheet, row + 1, detail, number_columns={2, 3, 4, 5, 6, 7, 8}, header_fill="E2F0D9") + 2
+
+    # Per-method WAPE calculation from the exact detail used above.
+    formula_rows = []
+    for method in _METHODS:
+        details = example["methods"].get(method, {})
+        actual = list(details.get("actual", []) or [])
+        forecasts = list(details.get("forecast", []) or [])
+        total_actual = sum(abs(float(x)) for x in actual)
+        total_error = sum(abs(float(a) - float(f)) for a, f in zip(actual, forecasts))
+        wape = details.get("wape", float("nan"))
+        formula_rows.append({
+            "Metode": method,
+            "Σ Actual Absolut": total_actual,
+            "Σ Error Absolut": total_error,
+            "WAPE Hasil Backtest (%)": wape,
+            "Rumus": "Σ|Actual - Forecast Backtest| / Σ|Actual| × 100%",
+        })
+    formula_df = pd.DataFrame(formula_rows)
+    worksheet.cell(row, 1, "Perhitungan WAPE Item Ini")
+    worksheet.cell(row, 1).font = Font(bold=True)
+    row = _write_table(worksheet, row + 1, formula_df, number_columns={2, 3, 4}, header_fill="E2F0D9") + 2
+    worksheet.cell(row, 1, "Catatan: angka pada bagian ini dihitung ulang dari histori item nyata dan backtest method yang sama dengan forecasting.py.")
+    worksheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+    return row + 3
+
+
+def _build_comparing_dataframe(data):
+    """Data Comparing: hanya hasil forecast sistem untuk lima kolom."""
+    df = _safe_dataframe(data)
+    if df.empty:
+        return pd.DataFrame(columns=_COMPARING_COLUMNS)
+    result = df.copy()
+    for column in _COMPARING_COLUMNS:
+        if column not in result.columns:
+            result[column] = pd.NA
+    result = result[_COMPARING_COLUMNS].copy()
+    for column in _COMPARING_COLUMNS[2:]:
+        result[column] = _numeric_series(result[column], decimals=2)
+    return result
+
+
+def _write_comparing_section(worksheet, dataframe, title, start_row, fill_color):
+    worksheet.cell(start_row, 1, title)
+    worksheet.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=5)
+    worksheet.cell(start_row, 1).font = Font(bold=True, size=12)
+    worksheet.cell(start_row, 1).fill = PatternFill("solid", fgColor=fill_color)
+    header_row = start_row + 1
+    for idx, column in enumerate(_COMPARING_COLUMNS, start=1):
+        cell = worksheet.cell(header_row, idx, column)
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor=fill_color)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    df = _safe_dataframe(dataframe)
+    if df.empty:
+        df = pd.DataFrame(columns=_COMPARING_COLUMNS)
+    for r, values in enumerate(df[_COMPARING_COLUMNS].itertuples(index=False, name=None), start=header_row + 1):
+        for c, value in enumerate(values, start=1):
+            cell = worksheet.cell(r, c, value)
+            if c >= 3 and value is not None:
+                cell.number_format = "#,##0.00"
+    return header_row + max(1, len(df))
+
+
+def _write_forecast_monthly_sheet(writer, summary, periode_forecast, history_df, history_months, forecast_bbb, forecast_bbt):
+    """Dashboard-style Performance Forecasting + explanation WAPE."""
+    ws = writer.book.create_sheet("Forecast Bulanan")
+    ws.sheet_view.showGridLines = False
+
+    ws["A1"] = "FORECAST BULANAN - PERFORMANCE FORECASTING"
+    ws.merge_cells("A1:H1")
+    ws["A1"].font = Font(bold=True, size=15)
+    ws["A1"].alignment = Alignment(horizontal="left")
+    ws["A2"] = f"Periode Forecast: {periode_forecast or '-'}"
+    ws.merge_cells("A2:H2")
+    ws["A3"] = "MA, WMA, dan XGBoost dihitung dan ditampilkan secara independen. Tidak ada Best Method."
+    ws.merge_cells("A3:H3")
+
+    row = 5
+    for stream, stream_df, fill in (
+        ("BBB", forecast_bbb, "BDD7EE"),
+        ("BBT", forecast_bbt, "C6E0B4"),
+    ):
+        stream_summary = _safe_summary_stream(summary, stream.lower())
+        row = _write_performance_section(ws, stream, stream_summary, row, fill)
+        example = _prepare_dynamic_example(
+            history_df,
+            stream,
+            periode_forecast,
+            history_months=history_months,
+            forecast_df=stream_df,
+        )
+        row = _write_dynamic_example(ws, example, row)
+
+    widths = {
+        "A": 30, "B": 24, "C": 24, "D": 24,
+        "E": 24, "F": 24, "G": 26, "H": 22,
+    }
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = "A5"
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    return ws
+
+
 # =========================================================
 # EXPORT EXCEL
 # =========================================================
@@ -769,274 +1264,116 @@ def export_forecast_excel(
     recursive_detail_bbb=None,
     recursive_detail_bbt=None,
     summary=None,
+    history_df=None,
+    history_months=None,
 ):
     """
     Membuat file Excel hasil forecasting.
 
-    Sheet utama:
+    Struktur workbook:
 
     1. Forecast Bulanan
+       - Performance Forecasting BBB dan BBT
+       - WAPE, Accuracy, total actual backtest, total error per metode
+       - penjelasan sumber WAPE
+       - contoh dinamis 1 item dari Data OUT asli
+
     2. Detail BBB
     3. Detail BBT
+    4. Comparing
+       - BBB dan BBT dipisah
+       - HANYA Nama Barang, Satuan, Forecast MA, Forecast WMA,
+         Forecast XGBoost
 
-    Sheet tambahan bila detail recursive diberikan:
+    5-6. Recursive BBB/BBT bila diberikan.
 
-    4. Recursive BBB
-    5. Recursive BBT
-
-    Parameter recursive_detail_bbb dan recursive_detail_bbt
-    bersifat opsional agar pemanggilan lama tetap kompatibel.
-
-    Return:
-        bytes Excel yang bisa digunakan
-        oleh st.download_button().
+    Parameter baru history_df dan history_months opsional agar pemanggilan
+    lama tetap kompatibel. Bila history_df tidak tersedia, bagian contoh
+    dinamis diberi keterangan bahwa data sumber tidak tersedia.
     """
 
-    # -----------------------------------------------------
-    # Prepare BBB
-    # -----------------------------------------------------
-
-    df_bbb = (
-        _format_forecast_dataframe(
-            forecast_bbb
-        )
-    )
-
-    # -----------------------------------------------------
-    # Prepare BBT
-    # -----------------------------------------------------
-
-    df_bbt = (
-        _format_forecast_dataframe(
-            forecast_bbt
-        )
-    )
-
-    # -----------------------------------------------------
-    # Prepare recursive detail
-    # -----------------------------------------------------
-
-    df_recursive_bbb = (
-        _format_recursive_dataframe(
-            recursive_detail_bbb
-        )
-    )
-
-    df_recursive_bbt = (
-        _format_recursive_dataframe(
-            recursive_detail_bbt
-        )
-    )
-
-    # -----------------------------------------------------
-    # Output memory
-    # -----------------------------------------------------
+    df_bbb = _format_forecast_dataframe(forecast_bbb)
+    df_bbt = _format_forecast_dataframe(forecast_bbt)
+    df_recursive_bbb = _format_recursive_dataframe(recursive_detail_bbb)
+    df_recursive_bbt = _format_recursive_dataframe(recursive_detail_bbt)
 
     output = BytesIO()
 
-    with pd.ExcelWriter(
-        output,
-        engine="openpyxl",
-    ) as writer:
-
-        # =================================================
-        # SHEET 1
-        # FORECAST BULANAN
-        # =================================================
-
-        rows = []
-
-        # -------------------------------------------------
-        # BBB
-        # -------------------------------------------------
-
-        if not df_bbb.empty:
-
-            temp_bbb = (
-                df_bbb.copy()
-            )
-
-            temp_bbb.insert(
-                0,
-                "Outlet",
-                "BBB",
-            )
-
-            rows.append(
-                temp_bbb
-            )
-
-        # -------------------------------------------------
-        # BBT
-        # -------------------------------------------------
-
-        if not df_bbt.empty:
-
-            temp_bbt = (
-                df_bbt.copy()
-            )
-
-            temp_bbt.insert(
-                0,
-                "Outlet",
-                "BBT",
-            )
-
-            rows.append(
-                temp_bbt
-            )
-
-        # -------------------------------------------------
-        # Gabungkan
-        # -------------------------------------------------
-
-        if rows:
-
-            df_summary = (
-                pd.concat(
-                    rows,
-                    ignore_index=True,
-                )
-            )
-
-        else:
-
-            df_summary = pd.DataFrame(
-                columns=[
-                    "Outlet",
-                    "Nama Barang",
-                    "Satuan",
-                    "Forecast MA",
-                    "WAPE MA (%)",
-                    "Accuracy MA (%)",
-                    "Forecast WMA",
-                    "WAPE WMA (%)",
-                    "Accuracy WMA (%)",
-                    "Forecast XGBoost",
-                    "WAPE XGBoost (%)",
-                    "Accuracy XGBoost (%)",
-                ]
-            )
-
-        df_summary.to_excel(
-            writer,
-            sheet_name="Forecast Bulanan",
-            index=False,
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        # Forecast Bulanan dibuat manual agar tidak lagi menjadi tabel item forecast.
+        _write_forecast_monthly_sheet(
+            writer=writer,
+            summary=summary,
+            periode_forecast=periode_forecast,
+            history_df=history_df,
+            history_months=history_months,
+            forecast_bbb=forecast_bbb,
+            forecast_bbt=forecast_bbt,
         )
 
-        # =================================================
-        # SHEET 2
-        # DETAIL BBB
-        # =================================================
-
-        df_detail_bbb = _append_average_row(df_bbb)
-
+        # Detail tetap tersedia untuk audit item per item.
         _write_dataframe_sheet(
             writer,
-            df_detail_bbb,
+            df_bbb,
             "Detail BBB",
             _empty_export_dataframe(),
         )
-
-        # =================================================
-        # SHEET 3
-        # DETAIL BBT
-        # =================================================
-
-        df_detail_bbt = _append_average_row(df_bbt)
-
         _write_dataframe_sheet(
             writer,
-            df_detail_bbt,
+            df_bbt,
             "Detail BBT",
             _empty_export_dataframe(),
         )
 
-        # =================================================
-        # SHEET 5
-        # RECURSIVE BBB
-        # =================================================
+        # Comparing hanya berisi lima kolom yang diminta.
+        ws_comparing = writer.book.create_sheet("Comparing")
+        ws_comparing.sheet_view.showGridLines = False
+        next_row = _write_comparing_section(
+            ws_comparing,
+            _build_comparing_dataframe(forecast_bbb),
+            "COMPARING - BBB",
+            start_row=1,
+            fill_color="BDD7EE",
+        )
+        _write_comparing_section(
+            ws_comparing,
+            _build_comparing_dataframe(forecast_bbt),
+            "COMPARING - BBT",
+            start_row=next_row + 3,
+            fill_color="C6E0B4",
+        )
+        for column, width in {
+            "A": 30,
+            "B": 14,
+            "C": 18,
+            "D": 19,
+            "E": 21,
+        }.items():
+            ws_comparing.column_dimensions[column].width = width
+        ws_comparing.freeze_panes = "A3"
 
         if not df_recursive_bbb.empty:
-
-            df_recursive_bbb.to_excel(
-                writer,
-                sheet_name="Recursive BBB",
-                index=False,
-            )
-
-        # =================================================
-        # SHEET 5
-        # RECURSIVE BBT
-        # =================================================
-
+            df_recursive_bbb.to_excel(writer, sheet_name="Recursive BBB", index=False)
         if not df_recursive_bbt.empty:
+            df_recursive_bbt.to_excel(writer, sheet_name="Recursive BBT", index=False)
 
-            df_recursive_bbt.to_excel(
-                writer,
-                sheet_name="Recursive BBT",
-                index=False,
-            )
-
-        # =================================================
-        # FORMAT SEMUA SHEET
-        # =================================================
+        # Apply common styling to detail/recursive sheets only.
+        for sheet_name in writer.book.sheetnames:
+            ws = writer.book[sheet_name]
+            if sheet_name not in {"Forecast Bulanan", "Comparing"}:
+                _format_worksheet(ws)
 
         workbook = writer.book
-
-        for worksheet in (
-            workbook.worksheets
-        ):
-
-            _format_worksheet(
-                worksheet
-            )
-
-        # =================================================
-        # WORKBOOK METADATA
-        # =================================================
-
-        periode_text = _safe_text(
-            periode_forecast
-        )
-
-        user_text = _safe_text(
-            nama_user
-        )
-
-        workbook.properties.title = (
-            "Demand Planning Forecast"
-        )
-
-        workbook.properties.subject = (
-            f"Forecast {periode_text}"
-            if periode_text
-            else "Demand Forecast"
-        )
-
-        workbook.properties.creator = (
-            user_text
-            if user_text
-            else "Demand Planner"
-        )
-
+        workbook.properties.title = "Demand Planning Forecast"
+        workbook.properties.subject = "Forecast MA, WMA, XGBoost dan Performance Forecasting"
+        workbook.properties.creator = _safe_text(nama_user) or "Demand Planner"
         workbook.properties.description = (
-            "Forecast demand "
-            "Main Warehouse Batu Ceper"
+            "Forecast demand dengan MA, WMA, dan XGBoost. "
+            "WAPE dihitung dari walk-forward backtesting."
         )
-
-        workbook.properties.keywords = (
-            "Demand Planning, "
-            "Forecast, BBB, BBT, "
-            "Recursive Forecast"
-        )
-
-    # -----------------------------------------------------
-    # Reset pointer
-    # -----------------------------------------------------
+        workbook.properties.keywords = "Demand Planning, Forecast, BBB, BBT, MA, WMA, XGBoost, WAPE"
 
     output.seek(0)
-
     return output.getvalue()
 
 
