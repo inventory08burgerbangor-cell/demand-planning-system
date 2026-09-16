@@ -214,7 +214,9 @@ def init_db():
 
                 forecast_bbt TEXT,
 
-                summary TEXT
+                summary TEXT,
+
+                data_out TEXT
 
             )
             """
@@ -253,6 +255,9 @@ def init_db():
                 "TEXT",
 
             "summary":
+                "TEXT",
+
+            "data_out":
                 "TEXT",
 
         }
@@ -454,6 +459,7 @@ def save_history(
     forecast_bbb=None,
     forecast_bbt=None,
     summary=None,
+    data_out=None,
 ):
 
     conn = get_connection()
@@ -547,6 +553,16 @@ def save_history(
         )
 
         # -------------------------------------------------
+        # DATA OUT ASLI -> JSON
+        # -------------------------------------------------
+
+        data_out_json = (
+            dataframe_to_json(
+                data_out
+            )
+        )
+
+        # -------------------------------------------------
         # TIMESTAMP
         # -------------------------------------------------
 
@@ -571,10 +587,12 @@ def save_history(
                 status,
                 forecast_bbb,
                 forecast_bbt,
-                summary
+                summary,
+                data_out
             )
             VALUES
             (
+                ?,
                 ?,
                 ?,
                 ?,
@@ -594,6 +612,7 @@ def save_history(
                 forecast_bbb_json,
                 forecast_bbt_json,
                 summary_json,
+                data_out_json,
             ),
         )
 
@@ -636,7 +655,8 @@ def load_history():
                 status,
                 forecast_bbb,
                 forecast_bbt,
-                summary
+                summary,
+                data_out
 
             FROM forecast_history
 
@@ -696,7 +716,8 @@ def load_history_by_id(
                 status,
                 forecast_bbb,
                 forecast_bbt,
-                summary
+                summary,
+                data_out
 
             FROM forecast_history
 
@@ -739,6 +760,13 @@ def load_history_by_id(
             safe_json_load(
                 row["summary"],
                 {},
+            )
+        )
+
+        data_out = (
+            safe_json_load(
+                row["data_out"],
+                [],
             )
         )
 
@@ -790,6 +818,9 @@ def load_history_by_id(
 
             "summary":
                 summary,
+
+            "data_out":
+                data_out,
 
         }
 

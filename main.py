@@ -1091,6 +1091,14 @@ def load_forecast_to_session(history_id):
 
     st.session_state.forecast_summary = summary
 
+    # Restore Data OUT asli yang tersimpan bersama history.
+    # History lama mungkin belum mempunyai kolom data_out; jika kosong,
+    # Data OUT yang sedang aktif di session tidak dihapus.
+    loaded_data_out = record.get("data_out") or []
+    if loaded_data_out:
+        st.session_state.data_out = pd.DataFrame(loaded_data_out)
+        st.session_state.data_valid = not st.session_state.data_out.empty
+
     st.session_state.loaded_history_id = history_id
 
     st.session_state.forecast_loaded = True
@@ -4382,6 +4390,7 @@ elif menu == "🔮 Forecast":
                             st.session_state
                             .forecast_summary
                         ),
+                        data_out=df,
                     )
 
                     st.session_state.loaded_history_id = (

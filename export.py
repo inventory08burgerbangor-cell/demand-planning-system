@@ -1230,14 +1230,30 @@ def _write_forecast_monthly_sheet(writer, summary, periode_forecast, history_df,
     ):
         stream_summary = _safe_summary_stream(summary, stream.lower())
         row = _write_performance_section(ws, stream, stream_summary, row, fill)
+
+    # Penjelasan WAPE dan contoh Data OUT hanya satu kali,
+    # diletakkan paling bawah setelah Performance BBB dan BBT.
+    row = _write_wape_explanation(ws, row + 1)
+
+    # Pilih satu item nyata dari Data OUT. Prioritas BBB, lalu BBT.
+    # Tidak ada angka contoh/dummy. Semua angka berasal dari data dan
+    # fungsi backtesting yang sama dengan forecasting.py.
+    example = _prepare_dynamic_example(
+        history_df,
+        "BBB",
+        periode_forecast,
+        history_months=history_months,
+        forecast_df=forecast_bbb,
+    )
+    if not example:
         example = _prepare_dynamic_example(
             history_df,
-            stream,
+            "BBT",
             periode_forecast,
             history_months=history_months,
-            forecast_df=stream_df,
+            forecast_df=forecast_bbt,
         )
-        row = _write_dynamic_example(ws, example, row)
+    row = _write_dynamic_example(ws, example, row + 1)
 
     widths = {
         "A": 30, "B": 24, "C": 24, "D": 24,
@@ -1272,7 +1288,7 @@ def export_forecast_excel(
 
     Struktur workbook:
 
-    1. Forecast Bulanan
+    1. Performance
        - Performance Forecasting BBB dan BBT
        - WAPE, Accuracy, total actual backtest, total error per metode
        - penjelasan sumber WAPE
