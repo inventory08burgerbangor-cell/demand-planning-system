@@ -1131,14 +1131,7 @@ def backtest_xgboost(values) -> float:
 # =========================================================
 
 def _default_moving_window(values, preferred=3):
-    """Menentukan window default untuk MA/WMA.
-
-    Sistem sekarang hanya menampilkan tiga metode utama:
-    MA, WMA, dan XGBoost. MA/WMA menggunakan window 3
-    jika histori minimal 3 bulan tersedia. Jika histori
-    lebih pendek, window mengikuti jumlah histori yang ada.
-    """
-
+    """Menentukan window MA/WMA berdasarkan histori yang tersedia."""
     try:
         count = len(values)
     except Exception:
@@ -1150,9 +1143,31 @@ def _default_moving_window(values, preferred=3):
     return max(1, min(int(preferred), int(count)))
 
 
+def _available_moving_windows(history_count: int) -> List[int]:
+    """Mengembalikan window MA/WMA yang benar-benar didukung histori.
+
+    Sistem memakai kandidat window 2, 3, 4, dan 6.
+    Window hanya dijalankan jika jumlah histori mencukupi.
+    Dengan begitu sistem tidak memaksa MA4/MA6 ketika histori
+    yang tersedia hanya 3 bulan.
+    """
+    try:
+        history_count = int(history_count)
+    except Exception:
+        return []
+
+    if history_count < 2:
+        return []
+
+    return [
+        window
+        for window in (2, 3, 4, 6)
+        if window <= history_count
+    ]
+
+
 def _normalize_method_name(method: str) -> str:
     """Normalisasi nama metode menjadi MA, WMA, atau XGBoost."""
-
     method_clean = (
         str(method)
         .strip()
@@ -1173,8 +1188,7 @@ def _normalize_method_name(method: str) -> str:
 
 
 def _method_window(method: str, values) -> int:
-    """Mengambil window MA/WMA; default MA/WMA adalah 3."""
-
+    """Mengambil window eksplisit atau window default adaptif."""
     method_clean = str(method).strip().upper().replace(" ", "")
 
     for prefix in ("WMA", "MA"):
@@ -1194,29 +1208,15 @@ def forecast_with_method(
     values,
     method: str,
 ) -> float:
-    """
-    Forecast satu periode menggunakan satu dari tiga metode utama:
-
-        MA
-        WMA
-        XGBoost
-
-    MA dan WMA menggunakan window default 3 bulan. Alias lama
-    seperti MA3/WMA3 tetap didukung agar kompatibel dengan kode
-    lain yang mungkin masih memanggil fungsi ini.
-    """
-
-    values = np.asarray(
-        values,
-        dtype=float,
-    )
-
+    """Forecast satu periode menggunakan MA, WMA, atau XGBoost."""
+    values = np.asarray(values, dtype=float)
     values = np.nan_to_num(
         values,
         nan=0.0,
         posinf=0.0,
         neginf=0.0,
     )
+    values = np.maximum(values, 0.0)
 
     method_clean = (
         str(method)
@@ -1225,45 +1225,20 @@ def forecast_with_method(
         .replace(" ", "")
     )
 
-    # -----------------------------------------------------
-    # XGBoost
-    # -----------------------------------------------------
-
-    if method_clean in {
-        "XGBOOST",
-        "XGB",
-    }:
+    if method_clean in {"XGBOOST", "XGB"}:
         return xgboost_forecast(values)
-
-    # -----------------------------------------------------
-    # WMA
-    # -----------------------------------------------------
 
     if method_clean.startswith("WMA"):
         window = _method_window(method_clean, values)
-
         if window <= 0:
             return np.nan
-
-        return weighted_moving_average(
-            values,
-            window,
-        )
-
-    # -----------------------------------------------------
-    # MA
-    # -----------------------------------------------------
+        return weighted_moving_average(values, window)
 
     if method_clean.startswith("MA"):
         window = _method_window(method_clean, values)
-
         if window <= 0:
             return np.nan
-
-        return moving_average(
-            values,
-            window,
-        )
+        return moving_average(values, window)
 
     return np.nan
 
@@ -1276,25 +1251,15 @@ def backtest_method_details(
     values,
     method: str,
 ):
-    """
-    Walk-forward backtesting untuk satu metode tertentu.
-
-    WAPE dihitung TERPISAH untuk setiap metode.
-    Forecast recursive intermediate tidak pernah dimasukkan
-    ke sini; hanya pasangan actual-vs-backtest forecast historis.
-    """
-
-    values = np.asarray(
-        values,
-        dtype=float,
-    )
-
+    """Walk-forward backtesting untuk satu metode/window tertentu."""
+    values = np.asarray(values, dtype=float)
     values = np.nan_to_num(
         values,
         nan=0.0,
         posinf=0.0,
         neginf=0.0,
     )
+    values = np.maximum(values, 0.0)
 
     method_clean = (
         str(method)
@@ -1303,7 +1268,6 @@ def backtest_method_details(
         .replace(" ", "")
     )
 
-    # XGBoost memiliki backtest walk-forward sendiri.
     if method_clean in {"XGBOOST", "XGB"}:
         return backtest_xgboost_details(values)
 
@@ -1320,7 +1284,7 @@ def backtest_method_details(
 
     window = _method_window(method_clean, values)
 
-    if window <= 0:
+    if window <= 0 or len(values) < 2:
         return {
             "actual": [],
             "forecast": [],
@@ -1330,27 +1294,12 @@ def backtest_method_details(
     actual_list = []
     forecast_list = []
 
-    # -----------------------------------------------------
-    # Walk-forward backtest
-    # -----------------------------------------------------
-    #
-    # Gunakan adaptive window saat histori pendek. Dengan cara ini
-    # histori tepat 3 bulan tetap memiliki pasangan actual-vs-forecast
-    # untuk WAPE, tanpa memaksa histori tambahan yang tidak tersedia.
-    # Saat histori sudah >= window, window kembali ke 3 bulan penuh.
-    # -----------------------------------------------------
-
-    if len(values) < 2:
-        return {
-            "actual": [],
-            "forecast": [],
-            "wape": np.nan,
-        }
-
     for i in range(1, len(values)):
-
         train_values = values[:i]
         actual_value = values[i]
+
+        # Adaptive untuk histori pendek: window efektif mengikuti
+        # jumlah training yang benar-benar tersedia.
         effective_window = min(window, len(train_values))
 
         if effective_window <= 0:
@@ -1371,11 +1320,7 @@ def backtest_method_details(
             if not np.isfinite(prediction):
                 continue
 
-            prediction = max(
-                0.0,
-                float(prediction),
-            )
-
+            prediction = max(0.0, float(prediction))
             actual_list.append(float(actual_value))
             forecast_list.append(prediction)
 
@@ -1389,31 +1334,16 @@ def backtest_method_details(
             "wape": np.nan,
         }
 
-    wape = calculate_wape(
-        actual_list,
-        forecast_list,
-    )
-
     return {
         "actual": actual_list,
         "forecast": forecast_list,
-        "wape": wape,
+        "wape": calculate_wape(actual_list, forecast_list),
     }
 
 
-def backtest_method(
-    values,
-    method: str,
-) -> float:
-    """
-    Mengembalikan WAPE dari suatu method.
-    """
-
-    result = backtest_method_details(
-        values,
-        method,
-    )
-
+def backtest_method(values, method: str) -> float:
+    """Mengembalikan WAPE dari satu metode/window."""
+    result = backtest_method_details(values, method)
     return result["wape"]
 
 
@@ -1421,133 +1351,257 @@ def backtest_method(
 # AVAILABLE METHODS
 # =========================================================
 
-def get_available_methods(
-    history_count: int,
-) -> List[str]:
+def get_available_methods(history_count: int) -> List[str]:
+    """Menentukan kandidat metode secara otomatis berdasarkan histori.
+
+    Aturan sistem:
+        - < 2 bulan  : belum cukup untuk backtest MA/WMA.
+        - 2 bulan     : MA2 dan WMA2 dapat dihitung, tetapi forecast
+                        utama tetap membutuhkan minimal 3 bulan.
+        - 3 bulan     : MA2, MA3, WMA2, WMA3 + XGBoost jika tersedia.
+        - 4-5 bulan   : kandidat window sampai 4 bulan.
+        - >= 6 bulan  : kandidat window 2, 3, 4, 6 bulan.
+
+    Jadi metode tidak dipaksa. Sistem hanya menjalankan kandidat
+    yang memang didukung jumlah histori yang dibaca.
     """
-    Mengembalikan tepat tiga metode forecast utama.
-
-    Tidak ada lagi pemilihan ``Best Method``.
-    Metode yang ditampilkan adalah:
-
-        1. MA
-        2. WMA
-        3. XGBoost
-
-    XGBoost hanya eligible jika package tersedia dan histori
-    memenuhi minimum. MA/WMA memerlukan minimal 2 titik untuk
-    backtest, sementara proses forecast keseluruhan tetap
-    mensyaratkan minimal 3 bulan histori seperti sebelumnya.
-    """
-
     try:
         history_count = int(history_count)
     except Exception:
         return []
 
-    if history_count < 1:
+    if history_count < 2:
         return []
 
-    methods = [
-        "MA",
-        "WMA",
-    ]
+    methods = []
 
-    if (
-        XGBOOST_AVAILABLE
-        and history_count >= XGBOOST_MIN_HISTORY
-    ):
+    for window in _available_moving_windows(history_count):
+        methods.append(f"MA{window}")
+
+    for window in _available_moving_windows(history_count):
+        methods.append(f"WMA{window}")
+
+    if XGBOOST_AVAILABLE and history_count >= XGBOOST_MIN_HISTORY:
         methods.append("XGBoost")
 
     return methods
 
 
-def evaluate_all_methods(values):
-    """
-    Menghitung forecast dan WAPE secara TERPISAH untuk MA, WMA,
-    dan XGBoost. Tidak ada ranking dan tidak ada Best Method.
+def _empty_method_result(available=False):
+    return {
+        "forecast": np.nan,
+        "wape": np.nan,
+        "actual": [],
+        "backtest_forecast": [],
+        "available": bool(available),
+        "window": None,
+        "candidates": [],
+    }
 
-    Return:
-        {
-            "MA": {"forecast", "wape", "actual", "backtest_forecast"},
-            "WMA": {...},
-            "XGBoost": {...},
-        }
-    """
 
-    values = np.asarray(
-        values,
-        dtype=float,
+def _select_best_candidate(candidates):
+    """Memilih kandidat dengan WAPE terendah tanpa memaksakan metode."""
+    valid = []
+
+    for candidate in candidates or []:
+        wape = candidate.get("wape", np.nan)
+        forecast = candidate.get("forecast", np.nan)
+
+        if not np.isfinite(wape):
+            continue
+        if not np.isfinite(forecast):
+            continue
+
+        valid.append(candidate)
+
+    if not valid:
+        return None
+
+    # Tie-breaker: WAPE sama -> window lebih besar diprioritaskan
+    # agar lebih stabil, lalu urutan kandidat asli dipertahankan.
+    valid.sort(
+        key=lambda x: (
+            float(x["wape"]),
+            -(int(x.get("window") or 0)),
+        )
     )
 
+    return valid[0]
+
+
+def evaluate_all_methods(values):
+    """Menghitung semua kandidat yang didukung histori.
+
+    Return tetap menyediakan key MA, WMA, dan XGBoost agar kompatibel
+    dengan main.py/export.py. MA dan WMA masing-masing berisi hasil
+    window terbaik dari keluarga tersebut berdasarkan WAPE.
+
+    Detail seluruh window tersedia di ``candidate_methods``.
+    """
+    values = np.asarray(values, dtype=float)
     values = np.nan_to_num(
         values,
         nan=0.0,
         posinf=0.0,
         neginf=0.0,
     )
-
     values = np.maximum(values, 0.0)
 
-    method_names = ["MA", "WMA", "XGBoost"]
-    results = {}
+    history_count = len(values)
+    available_names = get_available_methods(history_count)
 
-    for method in method_names:
-        if method == "XGBoost" and not XGBOOST_AVAILABLE:
-            results[method] = {
-                "forecast": np.nan,
-                "wape": np.nan,
-                "actual": [],
-                "backtest_forecast": [],
-                "available": False,
-            }
+    results = {
+        "MA": _empty_method_result(False),
+        "WMA": _empty_method_result(False),
+        "XGBoost": _empty_method_result(False),
+    }
+
+    candidate_methods = {}
+
+    # -----------------------------------------------------
+    # MA / WMA: jalankan hanya window yang tersedia
+    # -----------------------------------------------------
+    for method_name in available_names:
+        if method_name == "XGBoost":
             continue
 
-        details = backtest_method_details(
-            values,
-            method,
-        )
+        details = backtest_method_details(values, method_name)
+        forecast = forecast_with_method(values, method_name)
 
-        forecast = forecast_with_method(
-            values,
-            method,
-        )
-
-        if not np.isfinite(forecast):
-            forecast = np.nan
-        else:
+        if np.isfinite(forecast):
             forecast = max(0.0, float(forecast))
+        else:
+            forecast = np.nan
 
-        results[method] = {
+        prefix = "WMA" if method_name.startswith("WMA") else "MA"
+        window = _method_window(method_name, values)
+
+        candidate = {
+            "method": method_name,
+            "family": prefix,
+            "window": window,
             "forecast": forecast,
             "wape": details["wape"],
             "actual": details["actual"],
             "backtest_forecast": details["forecast"],
-            "available": True,
+            "available": bool(
+                np.isfinite(forecast)
+                and np.isfinite(details["wape"])
+            ),
         }
+
+        candidate_methods[method_name] = candidate
+
+    for family in ("MA", "WMA"):
+        family_candidates = [
+            candidate
+            for candidate in candidate_methods.values()
+            if candidate["family"] == family
+        ]
+
+        best_family = _select_best_candidate(family_candidates)
+
+        if best_family is not None:
+            results[family] = {
+                "forecast": best_family["forecast"],
+                "wape": best_family["wape"],
+                "actual": best_family["actual"],
+                "backtest_forecast": best_family["backtest_forecast"],
+                "available": True,
+                "window": best_family["window"],
+                "method": best_family["method"],
+                "candidates": family_candidates,
+            }
+        else:
+            results[family]["candidates"] = family_candidates
+
+    # -----------------------------------------------------
+    # XGBoost
+    # -----------------------------------------------------
+    if "XGBoost" in available_names:
+        details = backtest_method_details(values, "XGBoost")
+        forecast = forecast_with_method(values, "XGBoost")
+
+        if np.isfinite(forecast):
+            forecast = max(0.0, float(forecast))
+        else:
+            forecast = np.nan
+
+        results["XGBoost"] = {
+            "forecast": forecast,
+            "wape": details["wape"],
+            "actual": details["actual"],
+            "backtest_forecast": details["forecast"],
+            "available": bool(
+                np.isfinite(forecast)
+                and np.isfinite(details["wape"])
+            ),
+            "window": None,
+            "method": "XGBoost",
+            "candidates": [],
+        }
+
+    results["candidate_methods"] = candidate_methods
+    results["available_methods"] = available_names
 
     return results
 
 
 def auto_best_method(values):
-    """
-    Kompatibilitas API lama.
+    """Memilih metode terbaik otomatis berdasarkan WAPE terendah.
 
-    Fungsi ini tidak lagi memilih Best Method. Nilai ``method``
-    dikembalikan sebagai None, sedangkan detail ketiga metode
-    tersedia di ``methods``. Kode baru sebaiknya menggunakan
-    ``evaluate_all_methods()`` secara langsung.
+    Semua kandidat yang didukung histori dibandingkan. Untuk MA/WMA,
+    setiap window yang tersedia ikut dibandingkan. Jika tidak ada
+    kandidat dengan WAPE valid, method dikembalikan sebagai None.
     """
-
     methods = evaluate_all_methods(values)
 
+    candidates = []
+
+    for method_name, details in methods.get("candidate_methods", {}).items():
+        if not details.get("available"):
+            continue
+        if np.isfinite(details.get("wape", np.nan)) and np.isfinite(
+            details.get("forecast", np.nan)
+        ):
+            candidates.append(details)
+
+    xgb = methods.get("XGBoost", {})
+    if xgb.get("available") and np.isfinite(xgb.get("wape", np.nan)):
+        candidates.append(
+            {
+                "method": "XGBoost",
+                "family": "XGBoost",
+                "window": None,
+                "forecast": xgb.get("forecast", np.nan),
+                "wape": xgb.get("wape", np.nan),
+                "actual": xgb.get("actual", []),
+                "backtest_forecast": xgb.get("backtest_forecast", []),
+                "available": True,
+            }
+        )
+
+    best = _select_best_candidate(candidates)
+
+    if best is None:
+        return {
+            "method": None,
+            "wape": np.nan,
+            "forecast": np.nan,
+            "actual": [],
+            "backtest_forecast": [],
+            "methods": methods,
+            "window": None,
+        }
+
     return {
-        "method": None,
-        "wape": np.nan,
-        "forecast": np.nan,
-        "actual": [],
-        "backtest_forecast": [],
+        "method": best["method"],
+        "wape": best["wape"],
+        "forecast": best["forecast"],
+        "actual": best.get("actual", []),
+        "backtest_forecast": best.get("backtest_forecast", []),
         "methods": methods,
+        "window": best.get("window"),
     }
 
 
@@ -2086,16 +2140,7 @@ def _forecast_item_recursive(
     forecast_date,
     history_months=None,
 ):
-    """
-    Menghasilkan forecast untuk tiga metode secara terpisah.
-
-    Tidak ada Best Method. Setiap metode memiliki:
-        - forecast sendiri
-        - WAPE sendiri
-        - backtest sendiri
-        - recursive steps sendiri
-    """
-
+    """Forecast satu item dengan metode yang dipilih secara adaptif."""
     history = prepare_item_history(
         df=df,
         item_name=item_name,
@@ -2107,59 +2152,42 @@ def _forecast_item_recursive(
     history_count = len(history)
     satuan = ""
 
-    if (
-        not history.empty
-        and "Satuan" in history.columns
-    ):
+    if not history.empty and "Satuan" in history.columns:
         satuan_values = (
             history["Satuan"]
             .dropna()
             .astype(str)
             .str.strip()
         )
-
         if not satuan_values.empty:
             satuan = satuan_values.iloc[-1]
 
     empty_methods = {
-        "MA": {
-            "forecast": np.nan,
-            "wape": np.nan,
-            "actual": [],
-            "backtest_forecast": [],
-            "recursive_steps": [],
-            "available": False,
-        },
-        "WMA": {
-            "forecast": np.nan,
-            "wape": np.nan,
-            "actual": [],
-            "backtest_forecast": [],
-            "recursive_steps": [],
-            "available": False,
-        },
-        "XGBoost": {
-            "forecast": np.nan,
-            "wape": np.nan,
-            "actual": [],
-            "backtest_forecast": [],
-            "recursive_steps": [],
-            "available": XGBOOST_AVAILABLE,
-        },
+        "MA": _empty_method_result(False),
+        "WMA": _empty_method_result(False),
+        "XGBoost": _empty_method_result(False),
     }
 
-    if history_count < 3:
+    if history.empty or history_count < 3:
         return {
             "history": history,
             "history_count": history_count,
             "satuan": satuan,
             "methods": empty_methods,
-            "forecast": np.nan,
+            "best": {
+                "method": None,
+                "wape": np.nan,
+                "forecast": np.nan,
+                "window": None,
+                "actual": [],
+                "backtest_forecast": [],
+            },
             "recursive_steps": [],
         }
 
     values = history["value"].astype(float).to_numpy()
     methods = evaluate_all_methods(values)
+    best = auto_best_method(values)
 
     start_period = parse_period(history["_periode"].iloc[-1])
 
@@ -2169,35 +2197,49 @@ def _forecast_item_recursive(
         value_column=value_column,
         forecast_date=forecast_date,
     )
-
     actual_map = _build_actual_map(actual_history)
 
-    for method in ("MA", "WMA", "XGBoost"):
-        if method not in methods:
-            continue
+    # Hanya keluarga MA/WMA/XGBoost yang memiliki hasil terpilih.
+    for family in ("MA", "WMA", "XGBoost"):
+        details = methods.get(family, {})
+        method_name = details.get("method")
 
-        if method == "XGBoost" and not XGBOOST_AVAILABLE:
+        if not method_name or not details.get("available"):
             continue
 
         recursive_result = recursive_forecast_to_target(
             values=values,
             start_period=start_period,
             target_period=forecast_date,
-            method=method,
+            method=method_name,
             actual_map=actual_map,
             history_months=history_months,
         )
 
-        methods[method]["forecast"] = recursive_result["forecast"]
-        methods[method]["recursive_steps"] = recursive_result["steps"]
-        methods[method]["available"] = True
+        details["forecast"] = recursive_result["forecast"]
+        details["recursive_steps"] = recursive_result["steps"]
+
+    # Best Method harus memakai forecast recursive dari kandidat terbaik,
+    # bukan forecast satu langkah mentah dari evaluate_all_methods().
+    best_method = best.get("method")
+    best_family = _normalize_method_name(best_method) if best_method else None
+    best_details = methods.get(best_family, {}) if best_family else {}
+
+    if best_method and best_details.get("recursive_steps"):
+        best_forecast = best_details.get("forecast", np.nan)
+    elif best_method and best_details.get("available"):
+        best_forecast = best_details.get("forecast", np.nan)
+    else:
+        best_forecast = np.nan
+
+    best["forecast"] = best_forecast
 
     return {
         "history": history,
         "history_count": history_count,
         "satuan": satuan,
         "methods": methods,
-        "forecast": np.nan,
+        "best": best,
         "recursive_steps": [],
     }
 
@@ -2212,18 +2254,14 @@ def forecast_stream(
     forecast_date,
     history_months=None,
 ):
+    """Forecast seluruh item untuk satu stream BBB atau BBT.
+
+    MA dan WMA otomatis memilih window terbaik dari window yang
+    tersedia berdasarkan WAPE backtesting. Kemudian Auto Best Method
+    membandingkan MA, WMA, dan XGBoost berdasarkan WAPE terendah.
+
+    WAPE agregat tetap dihitung terpisah untuk setiap metode/family.
     """
-    Forecast seluruh item untuk satu stream (BBB/BBT).
-
-    Output sekarang menampilkan tiga metode secara terpisah:
-
-        Forecast MA + WAPE MA
-        Forecast WMA + WAPE WMA
-        Forecast XGBoost + WAPE XGBoost
-
-    Tidak ada lagi kolom Best Method.
-    """
-
     empty_summary = {
         "wape": np.nan,
         "accuracy": np.nan,
@@ -2242,6 +2280,10 @@ def forecast_stream(
         "total_error_wma": 0.0,
         "total_error_xgboost": 0.0,
         "best_method": None,
+        "best_wape": np.nan,
+        "best_forecast_total": np.nan,
+        "methods": {},
+        "items": [],
     }
 
     if df is None or df.empty:
@@ -2258,14 +2300,11 @@ def forecast_stream(
         .astype(str)
         .str.strip()
     )
-
-    items = sorted(
-        [item for item in items.unique() if item]
-    )
+    items = sorted([item for item in items.unique() if item])
 
     result_rows = []
+    item_details = []
 
-    # Aggregate WAPE dihitung TERPISAH untuk masing-masing metode.
     aggregate = {
         "MA": {"actual": [], "forecast": []},
         "WMA": {"actual": [], "forecast": []},
@@ -2285,14 +2324,17 @@ def forecast_stream(
         history_count = item_result["history_count"]
         satuan = item_result["satuan"]
         methods = item_result["methods"]
+        best = item_result["best"]
 
-        # Item tanpa OUT sama sekali pada histori tidak ditampilkan.
-        # Nilai negatif sudah dinormalisasi menjadi 0 di prepare_item_history().
-        if history.empty or not np.isfinite(
-            pd.to_numeric(history["value"], errors="coerce").fillna(0.0).sum()
-        ) or float(
-            pd.to_numeric(history["value"], errors="coerce").fillna(0.0).sum()
-        ) <= 0:
+        if history.empty:
+            continue
+
+        history_total = pd.to_numeric(
+            history["value"],
+            errors="coerce",
+        ).fillna(0.0).sum()
+
+        if not np.isfinite(history_total) or float(history_total) <= 0:
             continue
 
         row = {
@@ -2311,12 +2353,32 @@ def forecast_stream(
             result_rows.append(row)
             continue
 
-        for method, forecast_col, wape_col in (
+        item_export_detail = {
+            "Nama Barang": item_name,
+            "Satuan": satuan,
+            "Histori": history_count,
+            "Forecast MA": np.nan,
+            "WAPE MA": np.nan,
+            "Forecast WMA": np.nan,
+            "WAPE WMA": np.nan,
+            "Forecast XGBoost": np.nan,
+            "WAPE XGBoost": np.nan,
+            "Best Method": best.get("method"),
+            "Forecast Terpilih": np.nan,
+            "WAPE Terbaik": (
+                round(float(best["wape"]), 3)
+                if np.isfinite(best.get("wape", np.nan))
+                else np.nan
+            ),
+            "Detail Histori": history.copy(),
+        }
+
+        for family, forecast_col, wape_col in (
             ("MA", "Forecast MA", "WAPE MA"),
             ("WMA", "Forecast WMA", "WAPE WMA"),
             ("XGBoost", "Forecast XGBoost", "WAPE XGBoost"),
         ):
-            details = methods.get(method, {})
+            details = methods.get(family, {})
             forecast = details.get("forecast", np.nan)
             wape = details.get("wape", np.nan)
 
@@ -2325,26 +2387,34 @@ def forecast_stream(
                 if np.isfinite(forecast)
                 else np.nan
             )
-
             row[wape_col] = (
                 round(float(wape), 3)
                 if np.isfinite(wape)
                 else np.nan
             )
 
-            # Hanya data actual-vs-backtest yang dikumpulkan.
-            # Recursive forecast tidak pernah menjadi pasangan WAPE.
+            item_export_detail[forecast_col] = row[forecast_col]
+            item_export_detail[wape_col] = row[wape_col]
+
             if (
                 details.get("actual")
                 and details.get("backtest_forecast")
             ):
-                aggregate[method]["actual"].extend(
+                aggregate[family]["actual"].extend(
                     details["actual"]
                 )
-                aggregate[method]["forecast"].extend(
+                aggregate[family]["forecast"].extend(
                     details["backtest_forecast"]
                 )
 
+        if best.get("method"):
+            item_export_detail["Forecast Terpilih"] = (
+                round(float(best.get("forecast")), 2)
+                if np.isfinite(best.get("forecast", np.nan))
+                else np.nan
+            )
+
+        item_details.append(item_export_detail)
         result_rows.append(row)
 
     result_df = pd.DataFrame(
@@ -2352,38 +2422,19 @@ def forecast_stream(
         columns=RESULT_COLUMNS,
     )
 
-    # -----------------------------------------------------
-    # Aggregate WAPE masing-masing metode
-    # -----------------------------------------------------
-
     method_summary = {}
 
-    for method in ("MA", "WMA", "XGBoost"):
-        actual_values = aggregate[method]["actual"]
-        forecast_values = aggregate[method]["forecast"]
+    for family in ("MA", "WMA", "XGBoost"):
+        actual_values = aggregate[family]["actual"]
+        forecast_values = aggregate[family]["forecast"]
 
         if actual_values and forecast_values:
-            actual_array = np.asarray(
-                actual_values,
-                dtype=float,
-            )
-            forecast_array = np.asarray(
-                forecast_values,
-                dtype=float,
-            )
-
-            total_actual = float(
-                np.sum(np.abs(actual_array))
-            )
+            actual_array = np.asarray(actual_values, dtype=float)
+            forecast_array = np.asarray(forecast_values, dtype=float)
+            total_actual = float(np.sum(np.abs(actual_array)))
             total_error = float(
-                np.sum(
-                    np.abs(
-                        actual_array
-                        - forecast_array
-                    )
-                )
+                np.sum(np.abs(actual_array - forecast_array))
             )
-
             method_wape = calculate_wape(
                 actual_array,
                 forecast_array,
@@ -2399,7 +2450,16 @@ def forecast_stream(
             else np.nan
         )
 
-        method_summary[method] = {
+        # Ambil window terbaik dari item-level hanya sebagai informasi.
+        windows = []
+        for detail in item_details:
+            # Tidak mengubah perhitungan agregat; ini hanya metadata.
+            item_name = detail.get("Nama Barang")
+            for candidate in []:
+                _ = item_name
+                _ = candidate
+
+        method_summary[family] = {
             "wape": (
                 round(float(method_wape), 3)
                 if np.isfinite(method_wape)
@@ -2414,9 +2474,37 @@ def forecast_stream(
             "total_error": round(total_error, 2),
         }
 
-    # ``wape``/``accuracy`` lama dipertahankan sebagai alias MA
-    # agar kode UI lama tidak langsung error, tetapi tidak lagi
-    # dianggap sebagai Best Method.
+    # Auto Best Method stream-level berdasarkan WAPE agregat.
+    stream_candidates = []
+    for family in ("MA", "WMA", "XGBoost"):
+        wape = method_summary[family]["wape"]
+        if np.isfinite(wape):
+            stream_candidates.append(
+                (family, float(wape))
+            )
+
+    if stream_candidates:
+        stream_candidates.sort(key=lambda x: x[1])
+        best_method_stream = stream_candidates[0][0]
+        best_wape_stream = stream_candidates[0][1]
+
+        selected_values = pd.to_numeric(
+            result_df.get(
+                f"Forecast {best_method_stream}",
+                pd.Series(dtype=float),
+            ),
+            errors="coerce",
+        )
+        best_forecast_total = (
+            float(selected_values.sum())
+            if not selected_values.empty
+            else np.nan
+        )
+    else:
+        best_method_stream = None
+        best_wape_stream = np.nan
+        best_forecast_total = np.nan
+
     summary = {
         "wape": method_summary["MA"]["wape"],
         "accuracy": method_summary["MA"]["accuracy"],
@@ -2434,8 +2522,19 @@ def forecast_stream(
         "total_error_ma": method_summary["MA"]["total_error"],
         "total_error_wma": method_summary["WMA"]["total_error"],
         "total_error_xgboost": method_summary["XGBoost"]["total_error"],
-        "best_method": None,
+        "best_method": best_method_stream,
+        "best_wape": (
+            round(best_wape_stream, 3)
+            if np.isfinite(best_wape_stream)
+            else np.nan
+        ),
+        "best_forecast_total": (
+            round(best_forecast_total, 2)
+            if np.isfinite(best_forecast_total)
+            else np.nan
+        ),
         "methods": method_summary,
+        "items": item_details,
     }
 
     return result_df, summary
@@ -2721,16 +2820,17 @@ def explain_recursive_forecast() -> str:
     """
 
     return (
-        "Recursive forecasting bekerja bertahap untuk setiap metode "
-        "secara terpisah: MA, WMA, dan XGBoost. Contoh: jika actual "
-        "tersedia sampai Agustus dan target Oktober, masing-masing "
-        "metode forecast September lalu menggunakan hasil tersebut "
-        "untuk forecast Oktober. Jika actual September tersedia, "
-        "actual September digunakan dan meng-override forecast "
-        "September. WAPE dihitung terpisah untuk MA, WMA, dan XGBoost "
-        "berdasarkan backtesting actual historis; forecast recursive "
-        "intermediate tidak digunakan untuk menghitung WAPE. Tidak ada "
-        "lagi pemilihan Best Method."
+        "Recursive forecasting bekerja bertahap untuk setiap kandidat "
+        "metode yang tersedia. MA dan WMA otomatis menyesuaikan window "
+        "berdasarkan histori, sedangkan XGBoost digunakan jika histori "
+        "mencukupi dan package tersedia. Contoh: jika actual tersedia "
+        "sampai Agustus dan target Oktober, metode yang dipakai forecast "
+        "September lalu menggunakan hasil tersebut untuk forecast Oktober. "
+        "Jika actual September tersedia, actual September digunakan dan "
+        "meng-override forecast September. WAPE dihitung dari backtesting "
+        "actual historis, lalu Auto Best Method memilih kandidat dengan "
+        "WAPE terendah. Forecast recursive intermediate tidak digunakan "
+        "untuk menghitung WAPE."
     )
 
 
@@ -2770,11 +2870,11 @@ if __name__ == "__main__":
     )
 
     print(
-        "Forecast methods      : MA, WMA, XGBoost"
+        "Forecast methods      : adaptive MA, WMA, XGBoost"
     )
 
     print(
-        "Best Method selection : disabled"
+        "Best Method selection : lowest WAPE"
     )
 
     print()
@@ -2804,8 +2904,9 @@ if __name__ == "__main__":
 # ---------------------------------------------------------
 # CATATAN ARSITEKTUR
 # ---------------------------------------------------------
-# MA, WMA, dan XGBoost dihitung independen. Tidak ada Best Method.
+# MA/WMA menjalankan window yang tersedia sesuai jumlah histori.
 # WAPE berasal dari walk-forward backtesting actual historis.
+# Auto Best Method memilih kandidat dengan WAPE terendah.
 # Forecast recursive intermediate tidak dimasukkan ke WAPE.
 # Actual intermediate meng-override forecast recursive.
 # ---------------------------------------------------------

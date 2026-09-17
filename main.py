@@ -260,67 +260,99 @@ if "confirm_delete_all" not in st.session_state:
 st.markdown(
     """
     <style>
-
     /* =====================================================
-       GLOBAL
+       GLOBAL / RESPONSIVE
        ===================================================== */
-
     .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 2rem;
+        width: 100%;
+        max-width: 1600px;
+        padding-top: 1.25rem;
+        padding-bottom: 2.5rem;
+        padding-left: clamp(1rem, 3vw, 3rem);
+        padding-right: clamp(1rem, 3vw, 3rem);
     }
-
 
     /* =====================================================
        HEADER
        ===================================================== */
-
     .main-title {
-        font-size: 30px;
-        font-weight: 800;
-        margin-bottom: 0px;
-        animation: titleFade 0.45s ease-out;
+        font-size: clamp(20px, 2.3vw, 26px);
+        font-weight: 850;
+        letter-spacing: -0.5px;
+        margin-bottom: 0;
+        animation: titleFade 0.55s ease-out both;
     }
 
     .sub-title {
         color: #777;
         font-size: 14px;
-        margin-top: 0px;
-        margin-bottom: 20px;
-        animation: subtitleFade 0.55s ease-out;
+        margin-top: 0;
+        margin-bottom: 6px;
+        animation: subtitleFade 0.7s ease-out both;
     }
 
+    .live-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12px;
+        opacity: 0.72;
+        margin: 2px 0 18px 2px;
+        animation: contentSlideIn 0.8s ease-out both;
+    }
+
+    .live-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 0 0 rgba(128,128,128,0.45);
+        animation: livePulse 1.8s infinite;
+    }
 
     /* =====================================================
        SECTION
        ===================================================== */
-
     .section-title {
+        position: relative;
         font-size: 21px;
-        font-weight: 700;
+        font-weight: 750;
         margin-top: 10px;
-        margin-bottom: 12px;
+        margin-bottom: 16px;
+        padding-bottom: 7px;
+        animation: sectionReveal 0.45s ease-out both;
     }
 
+    .section-title::after {
+        content: "";
+        display: block;
+        width: 58px;
+        height: 3px;
+        border-radius: 10px;
+        background: currentColor;
+        margin-top: 6px;
+        transform-origin: left;
+        animation: underlineGrow 0.65s ease-out both;
+    }
 
     /* =====================================================
-       METRIC
+       METRIC / CARDS
        ===================================================== */
-
     .metric-card {
-        padding: 18px;
+        min-height: 92px;
+        padding: 17px 18px;
         border-radius: 14px;
         border: 1px solid rgba(128,128,128,0.25);
         background: rgba(128,128,128,0.05);
         margin-bottom: 10px;
-        transition:
-            transform 0.25s ease,
-            box-shadow 0.25s ease;
+        transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+        animation: cardRise 0.5s ease-out both;
     }
 
     .metric-card:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 8px 22px rgba(0,0,0,0.08);
+        transform: translateY(-4px);
+        box-shadow: 0 10px 25px rgba(0,0,0,0.09);
+        border-color: rgba(128,128,128,0.45);
     }
 
     .metric-label {
@@ -335,55 +367,42 @@ st.markdown(
         margin-top: 4px;
     }
 
-
-    /* =====================================================
-       STREAM
-       ===================================================== */
-
     .stream-title {
         font-size: 18px;
         font-weight: 800;
-        margin-bottom: 8px;
+        margin: 16px 0 8px;
+        animation: contentSlideIn 0.45s ease-out both;
     }
 
-
-    /* =====================================================
-       LOADED BOX
-       ===================================================== */
-
-    .loaded-box {
-        padding: 14px 18px;
-        border-radius: 12px;
-        border: 1px solid rgba(0,128,0,0.25);
-        background: rgba(0,128,0,0.06);
-        margin-bottom: 18px;
-        animation: contentSlideIn 0.45s ease-out;
-    }
-
-
-    /* =====================================================
-       XGBOOST INFO
-       ===================================================== */
-
-    .method-box {
+    .loaded-box, .method-box {
         padding: 14px 18px;
         border-radius: 12px;
         border: 1px solid rgba(128,128,128,0.25);
         background: rgba(128,128,128,0.05);
-        margin: 10px 0 15px 0;
+        margin: 10px 0 15px;
+        animation: cardRise 0.5s ease-out both;
     }
 
+    /* =====================================================
+       TABLES / DATAFRAMES
+       ===================================================== */
+    div[data-testid="stDataFrame"] {
+        width: 100%;
+        animation: tableReveal 0.45s ease-out both;
+    }
+
+    div[data-testid="stDataFrame"] > div {
+        max-width: 100%;
+    }
 
     /* =====================================================
-       HELP PAGE
+       HELP
        ===================================================== */
-
     .help-page-indicator {
         text-align: center;
         font-size: 12px;
         color: #777;
-        margin-top: 5px;
-        margin-bottom: 10px;
+        margin: 5px 0 10px;
     }
 
     .help-page-title {
@@ -392,39 +411,8 @@ st.markdown(
         margin-bottom: 12px;
     }
 
-
-    /* =====================================================
-       FOOTER
-       ===================================================== */
-
-    .footer {
-        text-align: center;
-        color: #888;
-        font-size: 12px;
-        margin-top: 50px;
-        padding-top: 15px;
-        border-top: 1px solid rgba(128,128,128,0.2);
-    }
-
-
-    /* =====================================================
-       HELP DIALOG
-       ===================================================== */
-
     div[data-testid="stDialog"] {
-        animation: helpModalIn 0.30s ease-out;
-    }
-
-    @keyframes helpModalIn {
-        from {
-            opacity: 0;
-            transform: translateY(-18px) scale(0.97);
-        }
-
-        to {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-        }
+        animation: helpModalIn 0.3s ease-out both;
     }
 
     div[data-testid="stDialog"] > div {
@@ -432,46 +420,15 @@ st.markdown(
     }
 
     .help-dialog-content {
-        animation: helpContentFade 0.45s ease-out;
+        animation: helpContentFade 0.45s ease-out both;
     }
-
-    @keyframes helpContentFade {
-        from {
-            opacity: 0;
-            transform: translateY(8px);
-        }
-
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
-    }
-
 
     /* =====================================================
        SIDEBAR
        ===================================================== */
-
     section[data-testid="stSidebar"] {
-        animation: sidebarSlide 0.35s ease-out;
+        animation: sidebarSlide 0.35s ease-out both;
     }
-
-    @keyframes sidebarSlide {
-        from {
-            opacity: 0;
-            transform: translateX(-15px);
-        }
-
-        to {
-            opacity: 1;
-            transform: translateX(0);
-        }
-    }
-
-
-    /* =====================================================
-       SIDEBAR MENU ANIMATION
-       ===================================================== */
 
     section[data-testid="stSidebar"] div[role="radiogroup"] {
         gap: 6px;
@@ -480,10 +437,7 @@ st.markdown(
     section[data-testid="stSidebar"] div[role="radiogroup"] label {
         border-radius: 10px;
         padding: 5px 8px;
-        transition:
-            transform 0.20s ease,
-            background 0.20s ease,
-            box-shadow 0.20s ease;
+        transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
     }
 
     section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
@@ -493,8 +447,7 @@ st.markdown(
 
     section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {
         background: rgba(128,128,128,0.16);
-        box-shadow:
-            inset 3px 0 0 currentColor;
+        box-shadow: inset 3px 0 0 currentColor;
         transform: translateX(4px);
     }
 
@@ -502,83 +455,185 @@ st.markdown(
         font-weight: 800;
     }
 
-
     /* =====================================================
-       BUTTON ANIMATION
+       BUTTONS / INPUTS
        ===================================================== */
-
     .stButton > button {
-        transition:
-            transform 0.18s ease,
-            box-shadow 0.18s ease;
+        transition: transform 0.18s ease, box-shadow 0.18s ease;
     }
 
     .stButton > button:hover {
         transform: translateY(-2px);
-        box-shadow: 0 5px 14px rgba(0,0,0,0.10);
+        box-shadow: 0 6px 16px rgba(0,0,0,0.10);
     }
 
     .stButton > button:active {
         transform: scale(0.97);
     }
 
-
-    /* =====================================================
-       PAGE CONTENT ANIMATION
-       ===================================================== */
-
-    [data-testid="stAppViewContainer"] .main .block-container {
-        animation: pageFadeSlide 0.38s ease-out;
+    [data-testid="stFileUploader"], [data-testid="stSelectbox"], [data-testid="stNumberInput"] {
+        animation: inputReveal 0.4s ease-out both;
     }
 
-    @keyframes pageFadeSlide {
-        from {
-            opacity: 0;
-            transform: translateY(8px);
-        }
+    /* =====================================================
+       PAGE / FOOTER
+       ===================================================== */
+    [data-testid="stAppViewContainer"] .main .block-container {
+        animation: pageFadeSlide 0.38s ease-out both;
+    }
 
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
+    .footer {
+        text-align: center;
+        color: #888;
+        font-size: 12px;
+        margin-top: 50px;
+        padding-top: 15px;
+        border-top: 1px solid rgba(128,128,128,0.2);
+        animation: contentSlideIn 0.8s ease-out both;
+    }
+
+    /* =====================================================
+       KEYFRAMES
+       ===================================================== */
+    @keyframes pageFadeSlide {
+        from { opacity: 0; transform: translateY(8px); }
+        to { opacity: 1; transform: translateY(0); }
     }
 
     @keyframes titleFade {
-        from {
-            opacity: 0;
-            transform: translateX(-8px);
-        }
-
-        to {
-            opacity: 1;
-            transform: translateX(0);
-        }
+        from { opacity: 0; transform: translateX(-12px); }
+        to { opacity: 1; transform: translateX(0); }
     }
 
     @keyframes subtitleFade {
-        from {
-            opacity: 0;
-            transform: translateX(-5px);
-        }
+        from { opacity: 0; transform: translateX(-7px); }
+        to { opacity: 1; transform: translateX(0); }
+    }
 
-        to {
-            opacity: 1;
-            transform: translateX(0);
-        }
+    @keyframes sectionReveal {
+        from { opacity: 0; transform: translateY(7px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes underlineGrow {
+        from { opacity: 0; transform: scaleX(0); }
+        to { opacity: 1; transform: scaleX(1); }
+    }
+
+    @keyframes cardRise {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes tableReveal {
+        from { opacity: 0; transform: translateY(6px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes inputReveal {
+        from { opacity: 0; transform: translateY(5px); }
+        to { opacity: 1; transform: translateY(0); }
     }
 
     @keyframes contentSlideIn {
-        from {
-            opacity: 0;
-            transform: translateY(10px);
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes helpModalIn {
+        from { opacity: 0; transform: translateY(-18px) scale(0.97); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    @keyframes helpContentFade {
+        from { opacity: 0; transform: translateY(8px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes sidebarSlide {
+        from { opacity: 0; transform: translateX(-15px); }
+        to { opacity: 1; transform: translateX(0); }
+    }
+
+    @keyframes livePulse {
+        0% { box-shadow: 0 0 0 0 rgba(128,128,128,0.45); }
+        70% { box-shadow: 0 0 0 7px rgba(128,128,128,0); }
+        100% { box-shadow: 0 0 0 0 rgba(128,128,128,0); }
+    }
+
+    /* =====================================================
+       RESPONSIVE — TABLET / LAPTOP KECIL
+       ===================================================== */
+    @media (max-width: 1050px) {
+        [data-testid="stHorizontalBlock"] {
+            gap: 0.8rem;
         }
 
-        to {
-            opacity: 1;
-            transform: translateY(0);
+        [data-testid="column"] {
+            min-width: 0 !important;
+        }
+
+        .metric-value {
+            font-size: 23px;
         }
     }
 
+    /* =====================================================
+       RESPONSIVE — MOBILE / LAYAR SEMPIT
+       ===================================================== */
+    @media (max-width: 760px) {
+        .block-container {
+            padding-left: 0.85rem;
+            padding-right: 0.85rem;
+        }
+
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+            gap: 0.75rem !important;
+        }
+
+        [data-testid="column"] {
+            flex: 1 1 280px !important;
+            min-width: 280px !important;
+            width: 100% !important;
+        }
+
+        .main-title {
+            font-size: 24px;
+        }
+
+        .sub-title {
+            margin-bottom: 4px;
+        }
+
+        .section-title {
+            font-size: 19px;
+        }
+
+        .metric-card {
+            min-height: 78px;
+            padding: 14px;
+        }
+
+        .metric-value {
+            font-size: 22px;
+        }
+    }
+
+    @media (max-width: 520px) {
+        [data-testid="column"] {
+            flex-basis: 100% !important;
+            min-width: 100% !important;
+        }
+
+        .main-title {
+            font-size: 21px;
+        }
+
+        .live-status {
+            margin-bottom: 12px;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1861,7 +1916,7 @@ Sistem menghitung tiga metode secara **independen**:
 
 1. **MA**
 2. **WMA**
-3. **XGBoost** (jika tersedia dan memenuhi syarat histori)
+3. **XGBoost** (jika tersedia dan histori mencukupi)
 
 Setiap metode menghasilkan:
 
@@ -1871,7 +1926,7 @@ Setiap metode menghasilkan:
 
 ### Tidak Ada Pemilihan Metode Otomatis
 
-Sistem **tidak memilih satu metode secara otomatis**; MA, WMA, dan XGBoost ditampilkan bersamaan.
+Sistem membaca jumlah histori yang tersedia dan menyesuaikan metode yang dapat dihitung. Metode yang tersedia dibandingkan berdasarkan WAPE backtesting.
 
 Contoh:
 
@@ -2113,7 +2168,7 @@ Jadi:
 ### Ringkasan
 
 1. **MA, WMA, dan XGBoost dihitung secara terpisah.**
-2. **Tidak ada pemilihan metode otomatis.**
+2. **Sistem memilih metode berdasarkan WAPE terendah dari metode yang dapat dihitung dengan histori tersedia.**
 3. **Target jauh dihitung bertahap per bulan.**
 4. **Actual intermediate selalu lebih diprioritaskan.**
 5. **Forecast recursive tidak digunakan sebagai actual untuk WAPE.**
@@ -2240,7 +2295,7 @@ Contoh-contoh di halaman berikut menggunakan alur sederhana agar fungsi aplikasi
 
 **Data OUT → Setting → Validasi → Forecast → Dashboard / History**
 
-Data OUT menjadi sumber histori. Setting menentukan target forecast dan periode histori. Validasi memastikan data layak digunakan. Forecast melakukan perhitungan. Dashboard menampilkan hasil, sedangkan History menyimpan dan memuat kembali hasil forecast.
+Data OUT menjadi sumber histori. Setting menentukan target forecast dan periode histori. Validasi memastikan data layak digunakan. Forecast melakukan perhitungan adaptif. Dashboard menampilkan hasil, sedangkan History menyimpan dan memuat kembali hasil forecast.
         """,
     },
 ]
@@ -2488,7 +2543,8 @@ st.sidebar.caption(
 # =========================================================
 
 col_title, col_help = st.columns(
-    [8, 1]
+    [7, 1],
+    vertical_alignment="top",
 )
 
 
@@ -2501,6 +2557,11 @@ with col_title:
 
     st.markdown(
         '<div class="sub-title">Main Warehouse Batu Ceper</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="live-status"><span class="live-dot"></span> Sistem siap digunakan</div>',
         unsafe_allow_html=True,
     )
 
@@ -2796,9 +2857,9 @@ if menu == "📊 Dashboard":
         )
 
         st.caption(
-            "WAPE dan Forecast Accuracy berasal dari backtesting "
-            "histori. Setiap metode dihitung secara independen; "
-            "tidak ada pemilihan satu metode otomatis."
+            "WAPE dan Forecast Accuracy berasal dari backtesting histori. "
+            "Setiap metode dihitung secara independen, lalu sistem dapat "
+            "menentukan metode dengan WAPE terendah berdasarkan histori yang tersedia."
         )
 
         # Tabel ringkas agar Dashboard lebih mudah dibandingkan
@@ -2966,6 +3027,18 @@ if menu == "📊 Dashboard":
 
         else:
 
+            # =====================================================
+            # FIX EXPORT: loaded_forecast_info kadang tersimpan
+            # sebagai string/legacy value. Logic export lama di bawah
+            # memakai .get(), jadi normalisasi hanya di titik export.
+            # Tidak menghapus logic existing.
+            # =====================================================
+            if not isinstance(
+                st.session_state.loaded_forecast_info,
+                dict,
+            ):
+                st.session_state.loaded_forecast_info = {}
+
             try:
 
                 export_data = export_forecast_excel(
@@ -3001,8 +3074,29 @@ if menu == "📊 Dashboard":
                     ),
                 )
 
+                # =====================================================
+                # EXPORT FILENAME USER NAME
+                # Tambahan: tidak menghapus atau mengganti logic export
+                # yang sudah berjalan. Hanya mengambil nama user untuk
+                # ditambahkan ke nama file Excel.
+                # =====================================================
+                export_user_name = (
+                    (
+                        st.session_state.loaded_forecast_info
+                        if isinstance(
+                            st.session_state.loaded_forecast_info,
+                            dict,
+                        )
+                        else {}
+                    ).get(
+                        "nama_user",
+                        "Demand Planner",
+                    )
+                )
+
                 filename = generate_export_filename(
-                    forecast_period_text()
+                    forecast_period_text(),
+                    export_user_name,
                 )
 
                 st.download_button(
@@ -4266,7 +4360,7 @@ elif menu == "🔮 Forecast":
 
         st.caption(
             "Setiap metode memiliki Forecast dan WAPE sendiri. "
-            "Tidak ada pemilihan metode otomatis."
+            "Sistem memilih metode berdasarkan WAPE terendah dari metode yang dapat dihitung dengan histori tersedia."
         )
 
         performance_df = pd.DataFrame(
@@ -4765,7 +4859,7 @@ st.markdown(
 # 2. Gunakan tombol ❓ Bantuan Data OUT jika format kolom belum jelas.
 # 3. Buka Setting untuk memilih bulan/tahun target dan periode histori.
 # 4. Buka Validasi dan pastikan tidak ada ERROR yang menghalangi forecast.
-# 5. Buka Forecast dan jalankan perhitungan MA, WMA, dan XGBoost secara terpisah.
+# 5. Buka Forecast dan jalankan perhitungan. Sistem otomatis menyesuaikan metode berdasarkan histori yang tersedia.
 # 6. Buka Dashboard untuk melihat WAPE dan Accuracy setiap metode.
 # 7. Simpan hasil ke History jika diperlukan.
 # 8. Gunakan Bantuan Lengkap dari sidebar jika ingin membaca seluruh
@@ -4778,7 +4872,7 @@ st.markdown(
 # September sebagai histori sementara untuk menghitung Oktober.
 # Jika actual September tersedia, actual September yang dipakai.
 # Forecast recursive bukan actual dan tidak dimasukkan sebagai actual pada
-# perhitungan WAPE/backtesting. Tidak ada pemilihan metode otomatis.
+# perhitungan WAPE/backtesting. Sistem memilih metode berdasarkan WAPE terendah dari metode yang dapat dihitung dengan histori tersedia.
 #
 # CATATAN PEMELIHARAAN
 #

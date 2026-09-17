@@ -767,8 +767,14 @@ _COMPARING_COLUMNS = [
     "Nama Barang",
     "Satuan",
     "Forecast MA",
+    "WAPE MA (%)",
     "Forecast WMA",
+    "WAPE WMA (%)",
     "Forecast XGBoost",
+    "WAPE XGBoost (%)",
+    "Best Method",
+    "Forecast Terpilih",
+    "WAPE Terbaik (%)",
 ]
 
 
@@ -807,18 +813,33 @@ def _parse_period_for_export(value, default_year=None):
         return pd.NaT
 
 
-def _prepare_dynamic_example(history_df, stream, periode_forecast, history_months=None, forecast_df=None):
+def _prepare_dynamic_example(
+    history_df,
+    stream,
+    periode_forecast,
+    history_months=None,
+    forecast_df=None,
+    preferred_items=("Beef L", "Beef S"),
+):
     """
-    Mengambil satu item nyata dari Data OUT dan menghitung detail backtest
-    dengan fungsi forecasting yang sama dengan dashboard.
+    Menyiapkan contoh perhitungan WAPE dari data histori/backtest nyata.
 
-    Tidak membuat angka contoh/dummy. Bila data tidak tersedia, return None.
+    Prioritas item:
+    1. Beef L
+    2. Beef S
+    Bila salah satu tidak tersedia, sistem memilih item nyata lain yang
+    mempunyai histori paling lengkap.
+
+    Angka contoh tidak dibuat secara dummy. Forecast backtest dihitung
+    menggunakan fungsi forecasting yang sama dengan engine aplikasi.
     """
     df = _safe_dataframe(history_df)
     if df.empty:
         return None
 
-    value_column = "OUT BBB" if str(stream).upper() == "BBB" else "OUT BBT"
+    stream = str(stream).upper().strip()
+    value_column = "OUT BBB" if stream == "BBB" else "OUT BBT"
+
     required = {"Bulan", "Nama Barang", value_column}
     if not required.issubset(df.columns):
         return None
@@ -828,69 +849,282 @@ def _prepare_dynamic_example(history_df, stream, periode_forecast, history_month
         return None
 
     try:
-        from forecasting import prepare_item_history, backtest_method_details
+        from forecasting import (
+            prepare_item_history,
+            backtest_method_details,
+            get_available_methods,
+        )
     except Exception:
         return None
 
     work = df.copy()
-    work["Nama Barang"] = work["Nama Barang"].fillna("").astype(str).str.strip()
+    work["Nama Barang"] = (
+        work["Nama Barang"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
     work = work[work["Nama Barang"] != ""].copy()
+
     if work.empty:
         return None
 
-    # Pilih item dengan histori paling lengkap dan nilai actual > 0.
+    # Bila Satuan tersedia, pertahankan untuk contoh.
+    if "Satuan" not in work.columns:
+        work["Satuan"] = ""
+
+    # Kandidat item nyata dengan histori terbanyak.
     candidates = []
     for item_name in work["Nama Barang"].drop_duplicates().tolist():
-        history = prepare_item_history(
+        item_history = prepare_item_history(
             work,
             item_name,
             value_column,
             forecast_date,
             history_months=history_months,
         )
-        if history.empty:
+        if item_history is None or item_history.empty:
             continue
-        total = pd.to_numeric(history["value"], errors="coerce").fillna(0.0).sum()
-        if float(total) <= 0:
+
+        actual_values = pd.to_numeric(
+            item_history["value"], errors="coerce"
+        ).fillna(0.0)
+
+        history_count = int(len(actual_values))
+        positive_count = int((actual_values > 0).sum())
+
+        if history_count < 2:
             continue
-        candidates.append((len(history), str(item_name), history))
+
+        candidates.append(
+            (
+                item_name,
+                history_count,
+                positive_count,
+                item_history.copy(),
+            )
+        )
 
     if not candidates:
         return None
 
-    candidates.sort(key=lambda x: (-x[0], x[1].lower()))
-    _, item_name, history = candidates[0]
+    def candidate_rank(item):
+        name, history_count, positive_count, _ = item
+        normalized = str(name).strip().casefold()
+        preferred_rank = {
+            str(preferred_items[0]).casefold(): 0,
+            str(preferred_items[1]).casefold(): 1,
+        }.get(normalized, 99)
+        return (preferred_rank, -positive_count, -history_count)
 
-    satuan = ""
-    if "Satuan" in history.columns and not history.empty:
-        satuan = str(history.iloc[-1].get("Satuan", "") or "").strip()
+    candidates.sort(key=candidate_rank)
 
-    methods = {}
-    for method in _METHODS:
+    selected = []
+    selected_names = set()
+
+    # Prioritaskan Beef L dan Beef S bila memang ada.
+    for preferred in preferred_items:
+        for candidate in candidates:
+            if candidate[0].strip().casefold() == str(preferred).strip().casefold():
+                selected.append(candidate)
+                selected_names.add(candidate[0].strip().casefold())
+                break
+
+    # Lengkapi sampai tepat 2 item jika salah satu Beef tidak tersedia.
+    for candidate in candidates:
+        if len(selected) >= 2:
+            break
+        if candidate[0].strip().casefold() not in selected_names:
+            selected.append(candidate)
+            selected_names.add(candidate[0].strip().casefold())
+
+    if not selected:
+        return None
+
+    rows = []
+
+    # Gunakan metode keluarga MA sebagai contoh WAPE yang mudah dibaca.
+    # Jika MA tidak tersedia pada histori tertentu, coba WMA lalu XGBoost.
+    method_priority = ["MA", "WMA", "XGBoost"]
+
+    for item_name, history_count, positive_count, item_history in selected[:2]:
+        available = []
         try:
-            details = backtest_method_details(history["value"].to_numpy(dtype=float), method)
+            available = get_available_methods(history_count)
         except Exception:
-            details = {"actual": [], "forecast": [], "wape": float("nan")}
-        methods[method] = details
+            available = []
 
-    # Ambil forecast final yang benar-benar ditampilkan sistem bila tersedia.
-    forecast_row = pd.DataFrame()
+        method = next(
+            (m for m in method_priority if m in available),
+            None,
+        )
+
+        # Dengan histori minimal 2 bulan, MA2/WMA2 dapat digunakan.
+        if method is None:
+            continue
+
+        details = backtest_method_details(
+            item_history["value"].astype(float).tolist(),
+            method,
+        )
+
+        if not details:
+            continue
+
+        # =====================================================
+        # KOMPATIBILITAS HASIL BACKTEST
+        # forecasting.py mengembalikan dict:
+        # {"actual": [...], "forecast": [...], "wape": ...}.
+        # Kode export lama menganggap hasilnya list of dict,
+        # sehingga muncul error: 'str' object has no attribute 'get'.
+        # Normalisasi di sini agar kedua bentuk tetap didukung.
+        # =====================================================
+        if isinstance(details, dict):
+            detail_actual = list(details.get("actual", []) or [])
+            detail_forecast = list(details.get("forecast", []) or [])
+            details = [
+                {"actual": actual_value, "forecast": forecast_value}
+                for actual_value, forecast_value in zip(
+                    detail_actual,
+                    detail_forecast,
+                )
+            ]
+        elif isinstance(details, (list, tuple)):
+            details = [
+                item
+                for item in details
+                if isinstance(item, dict)
+            ]
+        else:
+            details = []
+
+        if not details:
+            continue
+
+        actuals = pd.to_numeric(
+            [x.get("actual") for x in details],
+            errors="coerce",
+        )
+        forecasts = pd.to_numeric(
+            [x.get("forecast") for x in details],
+            errors="coerce",
+        )
+
+        # pd.to_numeric(list) dapat menghasilkan numpy.ndarray pada
+        # kombinasi versi pandas tertentu. Ubah ke Series supaya
+        # operasi .notna() dan .reset_index() selalu tersedia.
+        actuals = pd.Series(actuals, dtype="float64")
+        forecasts = pd.Series(forecasts, dtype="float64")
+
+        valid = actuals.notna() & forecasts.notna()
+        if not valid.any():
+            continue
+
+        actuals = actuals[valid].reset_index(drop=True)
+        forecasts = forecasts[valid].reset_index(drop=True)
+
+        errors = (actuals - forecasts).abs()
+        total_actual = float(actuals.sum())
+        total_error = float(errors.sum())
+
+        if total_actual > 0:
+            wape = total_error / total_actual * 100.0
+        else:
+            wape = float("nan")
+
+        satuan_values = (
+            item_history["Satuan"].dropna().astype(str).str.strip().tolist()
+            if "Satuan" in item_history.columns
+            else []
+        )
+        satuan = satuan_values[0] if satuan_values else ""
+
+        # Baris detail backtest untuk contoh perhitungan.
+        for idx, (actual, forecast, error) in enumerate(
+            zip(actuals, forecasts, errors),
+            start=1,
+        ):
+            rows.append(
+                {
+                    "Item": item_name,
+                    "Satuan": satuan,
+                    "Periode Backtest": idx,
+                    "Actual": float(actual),
+                    "Forecast": float(forecast),
+                    "Error Absolut": float(error),
+                    "WAPE (%)": round(wape, 2),
+                    "Metode Contoh": method,
+                    "Total Actual": total_actual,
+                    "Total Error Absolut": total_error,
+                }
+            )
+
+    if not rows:
+        return None
+
+    result = pd.DataFrame(rows)
+
+    # =====================================================
+    # STRUKTUR CONTOH UNTUK SHEET EXCEL
+    # _write_dynamic_example() membutuhkan metadata item,
+    # histori, dan detail backtest. Bangun dari item nyata
+    # yang sama agar tidak ada data dummy.
+    # =====================================================
+    example_item = selected[0][0]
+    example_history = selected[0][3].copy()
+    example_satuan_values = (
+        example_history["Satuan"].dropna().astype(str).str.strip().tolist()
+        if "Satuan" in example_history.columns
+        else []
+    )
+    example_satuan = example_satuan_values[0] if example_satuan_values else ""
+
+    example_methods = {}
+    example_values = pd.to_numeric(
+        example_history["value"], errors="coerce"
+    ).fillna(0.0).astype(float).tolist()
+
+    for example_method in ("MA", "WMA", "XGBoost"):
+        try:
+            example_methods[example_method] = backtest_method_details(
+                example_values,
+                example_method,
+            )
+        except Exception:
+            example_methods[example_method] = {
+                "actual": [],
+                "forecast": [],
+                "wape": float("nan"),
+            }
+
+    example_forecast_row = pd.DataFrame()
     if forecast_df is not None:
-        fdf = _safe_dataframe(forecast_df)
-        if not fdf.empty and "Nama Barang" in fdf.columns:
-            mask = fdf["Nama Barang"].fillna("").astype(str).str.strip().eq(item_name)
-            if mask.any():
-                forecast_row = fdf.loc[mask].head(1).copy()
+        try:
+            forecast_work = _safe_dataframe(forecast_df)
+            if not forecast_work.empty and "Nama Barang" in forecast_work.columns:
+                mask = (
+                    forecast_work["Nama Barang"]
+                    .astype(str)
+                    .str.strip()
+                    .str.casefold()
+                    == str(example_item).strip().casefold()
+                )
+                example_forecast_row = forecast_work.loc[mask].head(1).copy()
+        except Exception:
+            example_forecast_row = pd.DataFrame()
 
     return {
-        "stream": str(stream).upper(),
-        "item": item_name,
-        "satuan": satuan,
-        "history": history.reset_index(drop=True),
-        "methods": methods,
-        "forecast_row": forecast_row,
-        "forecast_date": forecast_date,
+        "detail": result,
+        "stream": stream,
+        "formula": "WAPE = Total Error Absolut ÷ Total Actual × 100%",
+        "items": [r["Item"] for r in rows],
+        "item": example_item,
+        "satuan": example_satuan,
+        "history": example_history,
+        "methods": example_methods,
+        "forecast_row": example_forecast_row,
     }
+
 
 
 def _backtest_detail_table(example):
@@ -979,6 +1213,11 @@ def _write_table(worksheet, start_row, dataframe, number_columns=None, header_fi
 
     for r_offset, values in enumerate(df.itertuples(index=False, name=None), start=1):
         for c_idx, value in enumerate(values, start=1):
+            # openpyxl tidak dapat menulis pandas.NA secara langsung.
+            # Normalisasi missing value menjadi None agar export Excel
+            # tetap berjalan pada tabel yang memiliki kolom kosong.
+            if value is pd.NA or pd.isna(value):
+                value = None
             cell = worksheet.cell(start_row + r_offset, c_idx, value)
             cell.alignment = Alignment(vertical="center", wrap_text=True)
             cell.border = Border(
@@ -1172,20 +1411,149 @@ def _write_dynamic_example(worksheet, example, start_row):
     return row + 3
 
 
-def _build_comparing_dataframe(data):
-    """Data Comparing: hanya hasil forecast sistem untuk lima kolom."""
-    df = _safe_dataframe(data)
+def _build_comparing_dataframe(
+    dataframe,
+    stream_summary=None,
+):
+    """
+    Membuat recap per item dengan urutan kolom:
+    Forecast MA -> WAPE MA -> Forecast WMA -> WAPE WMA ->
+    Forecast XGBoost -> WAPE XGBoost -> Best Method ->
+    Forecast Terpilih -> WAPE Terbaik.
+
+    Metode yang tidak tersedia dibiarkan kosong.
+    BBB dan BBT diproses terpisah.
+    """
+    df = _safe_dataframe(dataframe)
+
     if df.empty:
         return pd.DataFrame(columns=_COMPARING_COLUMNS)
-    result = df.copy()
-    for column in _COMPARING_COLUMNS:
-        if column not in result.columns:
-            result[column] = pd.NA
-    result = result[_COMPARING_COLUMNS].copy()
-    for column in _COMPARING_COLUMNS[2:]:
-        result[column] = _numeric_series(result[column], decimals=2)
-    return result
 
+    result = pd.DataFrame()
+    result["Nama Barang"] = (
+        df["Nama Barang"].astype(str)
+        if "Nama Barang" in df.columns
+        else ""
+    )
+    result["Satuan"] = (
+        df["Satuan"].astype(str)
+        if "Satuan" in df.columns
+        else ""
+    )
+
+    def copy_column(target, candidates):
+        for candidate in candidates:
+            if candidate in df.columns:
+                result[target] = df[candidate]
+                return
+        result[target] = pd.NA
+
+    copy_column("Forecast MA", ["Forecast MA"])
+    copy_column("WAPE MA (%)", ["WAPE MA (%)", "WAPE MA"])
+    copy_column("Forecast WMA", ["Forecast WMA"])
+    copy_column("WAPE WMA (%)", ["WAPE WMA (%)", "WAPE WMA"])
+    copy_column("Forecast XGBoost", ["Forecast XGBoost"])
+    copy_column(
+        "WAPE XGBoost (%)",
+        ["WAPE XGBoost (%)", "WAPE XGBoost"],
+    )
+
+    # Ambil item-level best method bila tersedia dari forecasting.py.
+    item_summaries = {}
+    if isinstance(stream_summary, dict):
+        raw_items = stream_summary.get("items", {})
+        if isinstance(raw_items, dict):
+            item_summaries = raw_items
+        elif isinstance(raw_items, (list, tuple)):
+            # forecasting.py menyimpan item detail sebagai list of dict.
+            # Ubah menjadi mapping berdasarkan Nama Barang agar lookup
+            # meta.get(...) di bawah tetap aman.
+            item_summaries = {}
+            for item_meta in raw_items:
+                if not isinstance(item_meta, dict):
+                    continue
+                item_name = str(
+                    item_meta.get("Nama Barang", "")
+                ).strip()
+                if item_name:
+                    item_summaries[item_name] = item_meta
+
+    best_methods = []
+    selected_forecasts = []
+    best_wapes = []
+
+    for _, row in result.iterrows():
+        name = str(row["Nama Barang"]).strip()
+        meta = item_summaries.get(name, {})
+        if not isinstance(meta, dict):
+            meta = {}
+
+        best_method = meta.get("best_method", "")
+        best_forecast = meta.get("best_forecast", meta.get("forecast", pd.NA))
+        best_wape = meta.get("best_wape", pd.NA)
+
+        if not best_method:
+            # Backward-compatible fallback: pilih WAPE terendah yang ada.
+            options = [
+                ("MA", row.get("WAPE MA (%)"), row.get("Forecast MA")),
+                ("WMA", row.get("WAPE WMA (%)"), row.get("Forecast WMA")),
+                ("XGBoost", row.get("WAPE XGBoost (%)"), row.get("Forecast XGBoost")),
+            ]
+            valid_options = []
+            for method_name, wape_value, forecast_value in options:
+                try:
+                    wape_num = float(wape_value)
+                    if pd.notna(wape_num):
+                        valid_options.append(
+                            (wape_num, method_name, forecast_value)
+                        )
+                except Exception:
+                    pass
+
+            if valid_options:
+                valid_options.sort(key=lambda x: x[0])
+                best_wape, best_method, best_forecast = valid_options[0]
+            else:
+                best_method = ""
+                best_forecast = pd.NA
+                best_wape = pd.NA
+
+        best_methods.append(best_method or "-")
+        selected_forecasts.append(best_forecast)
+        best_wapes.append(best_wape)
+
+    result["Best Method"] = best_methods
+    result["Forecast Terpilih"] = selected_forecasts
+    result["WAPE Terbaik (%)"] = best_wapes
+
+    return result[_COMPARING_COLUMNS]
+
+
+
+
+# =========================================================
+# OPENPYXL SAFE VALUE
+# =========================================================
+
+def _excel_safe_value(value):
+    """
+    Mengubah pandas.NA/NaN/NaT menjadi None sebelum ditulis
+    langsung menggunakan openpyxl.
+
+    Ini penting untuk sheet Comparing karena beberapa kolom
+    memang boleh kosong bila metode tidak tersedia.
+    """
+    if value is None:
+        return None
+
+    try:
+        missing = pd.isna(value)
+        if isinstance(missing, bool) and missing:
+            return None
+    except Exception:
+        pass
+
+    return value
 
 def _write_comparing_section(worksheet, dataframe, title, start_row, fill_color):
     worksheet.cell(start_row, 1, title)
@@ -1203,7 +1571,7 @@ def _write_comparing_section(worksheet, dataframe, title, start_row, fill_color)
         df = pd.DataFrame(columns=_COMPARING_COLUMNS)
     for r, values in enumerate(df[_COMPARING_COLUMNS].itertuples(index=False, name=None), start=header_row + 1):
         for c, value in enumerate(values, start=1):
-            cell = worksheet.cell(r, c, value)
+            cell = worksheet.cell(r, c, _excel_safe_value(value))
             if c >= 3 and value is not None:
                 cell.number_format = "#,##0.00"
     return header_row + max(1, len(df))
@@ -1341,19 +1709,42 @@ def export_forecast_excel(
             _empty_export_dataframe(),
         )
 
+        # Histori yang diekspor dibatasi hanya pada histori yang digunakan
+        # forecasting, lalu BBB dan BBT dipisahkan.
+        _write_history_used_sheet(
+            writer=writer,
+            history_df=history_df,
+            periode_forecast=periode_forecast,
+            history_months=history_months,
+            stream="BBB",
+        )
+        _write_history_used_sheet(
+            writer=writer,
+            history_df=history_df,
+            periode_forecast=periode_forecast,
+            history_months=history_months,
+            stream="BBT",
+        )
+
         # Comparing hanya berisi lima kolom yang diminta.
         ws_comparing = writer.book.create_sheet("Comparing")
         ws_comparing.sheet_view.showGridLines = False
         next_row = _write_comparing_section(
             ws_comparing,
-            _build_comparing_dataframe(forecast_bbb),
+            _build_comparing_dataframe(
+                forecast_bbb,
+                _safe_summary_stream(summary, "BBB"),
+            ),
             "COMPARING - BBB",
             start_row=1,
             fill_color="BDD7EE",
         )
         _write_comparing_section(
             ws_comparing,
-            _build_comparing_dataframe(forecast_bbt),
+            _build_comparing_dataframe(
+                forecast_bbt,
+                _safe_summary_stream(summary, "BBT"),
+            ),
             "COMPARING - BBT",
             start_row=next_row + 3,
             fill_color="C6E0B4",
@@ -1362,8 +1753,14 @@ def export_forecast_excel(
             "A": 30,
             "B": 14,
             "C": 18,
-            "D": 19,
-            "E": 21,
+            "D": 14,
+            "E": 18,
+            "F": 14,
+            "G": 20,
+            "H": 14,
+            "I": 18,
+            "J": 18,
+            "K": 16,
         }.items():
             ws_comparing.column_dimensions[column].width = width
         ws_comparing.freeze_panes = "A3"
@@ -1394,17 +1791,170 @@ def export_forecast_excel(
 
 
 # =========================================================
+# DATA HISTORI YANG BENAR-BENAR DIGUNAKAN FORECASTING
+# =========================================================
+
+def _prepare_history_used_by_forecasting(
+    history_df,
+    periode_forecast,
+    history_months=None,
+):
+    """
+    Mengambil hanya histori yang masuk ke periode forecasting.
+
+    Output tetap satu dataframe sumber, lalu dipisahkan menjadi BBB dan BBT
+    ketika ditulis ke Excel.
+    """
+    df = _safe_dataframe(history_df)
+    if df.empty:
+        return pd.DataFrame()
+
+    required = {"Bulan", "Nama Barang"}
+    if not required.issubset(df.columns):
+        return pd.DataFrame()
+
+    forecast_date = _parse_period_for_export(periode_forecast)
+    if forecast_date is None or pd.isna(forecast_date):
+        return pd.DataFrame()
+
+    work = df.copy()
+    work["__period__"] = work["Bulan"].apply(
+        lambda x: _parse_period_for_export(x, default_year=forecast_date.year)
+    )
+    work = work[work["__period__"].notna()].copy()
+
+    if work.empty:
+        return pd.DataFrame()
+
+    # Gunakan jumlah histori yang sama dengan forecasting jika tersedia.
+    if history_months is not None:
+        try:
+            n_months = int(history_months)
+        except Exception:
+            n_months = None
+    else:
+        n_months = None
+
+    periods = sorted(
+        work["__period__"].dropna().unique().tolist()
+    )
+
+    # Hanya bulan sebelum periode forecast.
+    periods = [p for p in periods if p < forecast_date]
+
+    if n_months and n_months > 0:
+        periods = periods[-n_months:]
+
+    if not periods:
+        return pd.DataFrame()
+
+    used = work[work["__period__"].isin(periods)].copy()
+    used["Bulan"] = used["__period__"].dt.strftime("%B %Y")
+    used = used.drop(columns=["__period__"], errors="ignore")
+
+    # Agregasi mengikuti kebutuhan item-bulan forecasting.
+    base_columns = ["Bulan", "Nama Barang"]
+    if "Satuan" in used.columns:
+        base_columns.append("Satuan")
+
+    value_columns = [
+        column
+        for column in ["OUT BBB", "OUT BBT"]
+        if column in used.columns
+    ]
+
+    if not value_columns:
+        return pd.DataFrame()
+
+    for column in value_columns:
+        used[column] = pd.to_numeric(
+            used[column], errors="coerce"
+        ).fillna(0.0)
+
+    group_columns = base_columns
+    used = (
+        used.groupby(group_columns, as_index=False)[value_columns]
+        .sum()
+    )
+
+    # Urutkan bulan kronologis dan item.
+    month_order = {
+        month.strftime("%B %Y"): month
+        for month in periods
+    }
+    used["__sort_month__"] = used["Bulan"].map(month_order)
+    used = used.sort_values(
+        ["__sort_month__", "Nama Barang"],
+        kind="stable",
+    ).drop(columns=["__sort_month__"])
+
+    return used
+
+
+def _write_history_used_sheet(
+    writer,
+    history_df,
+    periode_forecast,
+    history_months,
+    stream,
+):
+    """
+    Menulis:
+      Data Histori BBB -> Bulan | Nama Barang | Satuan | OUT BBB
+      Data Histori BBT -> Bulan | Nama Barang | Satuan | OUT BBT
+    """
+    used = _prepare_history_used_by_forecasting(
+        history_df=history_df,
+        periode_forecast=periode_forecast,
+        history_months=history_months,
+    )
+
+    if stream == "BBB":
+        value_column = "OUT BBB"
+        sheet_name = "Data Histori BBB"
+    else:
+        value_column = "OUT BBT"
+        sheet_name = "Data Histori BBT"
+
+    columns = ["Bulan", "Nama Barang", "Satuan", value_column]
+
+    if used.empty or value_column not in used.columns:
+        pd.DataFrame(columns=columns).to_excel(
+            writer,
+            sheet_name=sheet_name,
+            index=False,
+        )
+        return
+
+    export_df = used.copy()
+    if "Satuan" not in export_df.columns:
+        export_df["Satuan"] = ""
+
+    export_df = export_df[columns]
+    export_df.to_excel(
+        writer,
+        sheet_name=sheet_name,
+        index=False,
+    )
+
+
+
+# =========================================================
 # NAMA FILE
 # =========================================================
 
 def generate_export_filename(
-    periode_forecast=""
+    periode_forecast="",
+    nama_user=""
 ):
     """
     Membuat nama file Excel otomatis.
 
     Contoh:
-    Demand_Planning_September_2026.xlsx
+    Forecast_September_2026_Budi.xlsx
+    Forecast_September_2026_Budi_Santoso.xlsx
+
+    ``nama_user`` dibuat opsional agar pemanggilan lama tetap kompatibel.
     """
 
     periode = _safe_text(
@@ -1452,9 +2002,44 @@ def generate_export_filename(
     # Nama file
     # -----------------------------------------------------
 
+    # -----------------------------------------------------
+    # Nama user (opsional)
+    # -----------------------------------------------------
+
+    user = _safe_text(
+        nama_user
+    )
+
+    if user:
+
+        for char in invalid_characters:
+
+            user = (
+                user.replace(
+                    char,
+                    "-",
+                )
+            )
+
+        user = " ".join(
+            user.split()
+        )
+
+    # -----------------------------------------------------
+    # Nama file final
+    # -----------------------------------------------------
+
+    if user:
+
+        return (
+            "Forecast_"
+            f"{periode.replace(' ', '_')}_"
+            f"{user.replace(' ', '_')}.xlsx"
+        )
+
     return (
-        "Demand_Planning_"
-        f"{periode}.xlsx"
+        "Forecast_"
+        f"{periode.replace(' ', '_')}.xlsx"
     )
 
 
