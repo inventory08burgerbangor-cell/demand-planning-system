@@ -234,7 +234,7 @@ st.markdown(
 
     .main-title {
         font-size: 30px;
-        font-weight: 600;
+        font-weight: 800;
         margin-bottom: 0px;
         animation: titleFade 0.45s ease-out;
     }
@@ -288,7 +288,7 @@ st.markdown(
 
     .metric-value {
         font-size: 26px;
-        font-weight: 600;
+        font-weight: 800;
         margin-top: 4px;
     }
 
